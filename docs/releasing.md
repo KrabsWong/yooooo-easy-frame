@@ -55,6 +55,11 @@ GitHub release, opens a version-only PR touching only `Cargo.toml` and
 Additional required checks can block that merge; resolve them and rerun the
 original Actions run.
 
+The request-tag `Preflight macOS build` workflow only packages the pre-version-bump
+commit to catch build regressions early. The `Release macOS app` job reruns the full
+test suite on the exact version-tag commit and is the authoritative validation
+before publishing.
+
 The merge commit is tagged `vX.Y.Z`. Do not push formal version tags yourself.
 The same run opens a `release-notes/<tag>` PR with a user-facing summary.
 Review the rendered Markdown, request changes with `/oc <instructions>` if
