@@ -13,10 +13,12 @@ use gpui_kit::{
         button::{Button, ButtonVariants as _},
         input::{Input, InputEvent, InputState},
         notification::Notification,
+        select::{SearchableVec, Select, SelectEvent, SelectState},
         spinner::Spinner,
         tab::{Tab, TabBar},
         theme::Theme,
     },
+    base::IndexPath,
     prelude::*,
     *,
 };
@@ -80,6 +82,7 @@ pub struct Builder {
     quality_input: Option<Entity<InputState>>,
     filename_input: Option<Entity<InputState>>,
     export_subscriptions: Vec<Subscription>,
+    settings_subscription: Option<Subscription>,
     _appearance_subscription: Option<Subscription>,
     _quit_subscription: Option<Subscription>,
     _visibility_subscription: Option<Subscription>,
@@ -139,9 +142,9 @@ impl Render for PreviewWindow {
 
 impl Builder {
     pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
-        Theme::sync_system_appearance(Some(window), cx);
+        sync_theme(Some(window), cx);
         let appearance_subscription = window.observe_window_appearance(|window, cx| {
-            Theme::sync_system_appearance(Some(window), cx);
+            sync_theme(Some(window), cx);
         });
         cx.bind_keys([
             KeyBinding::new("up", SelectPreviousFrame, Some("FrameList")),
@@ -167,6 +170,7 @@ impl Builder {
             quality_input: None,
             filename_input: None,
             export_subscriptions: Vec::new(),
+            settings_subscription: None,
             _appearance_subscription: Some(appearance_subscription),
             _quit_subscription: None,
             _visibility_subscription: None,
@@ -1019,7 +1023,39 @@ impl Builder {
 
     fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let lang = self.language;
-        let weak = cx.weak_entity();
+        let language_options = SearchableVec::new(vec![
+            "中文".to_string(),
+            "English".to_string(),
+        ]);
+        let language_select = cx.new(|cx| {
+            SelectState::new(
+                language_options,
+                Some(IndexPath::new(match lang {
+                    Language::Chinese => 0,
+                    Language::English => 1,
+                })),
+                window,
+                cx,
+            )
+        });
+        let language_subscription = cx.subscribe(
+            &language_select,
+            move |this, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else {
+                    return;
+                };
+                let language = match value.as_str() {
+                    "中文" => Language::Chinese,
+                    _ => Language::English,
+                };
+                if this.language != language {
+                    this.language = language;
+                    Settings { language }.save();
+                    cx.notify();
+                }
+            },
+        );
+        self.settings_subscription = Some(language_subscription);
         let app_version = env!("CARGO_PKG_VERSION").to_string();
         let update_available = updater::version();
         let automatic = updater::automatic();
@@ -1073,43 +1109,12 @@ impl Builder {
                                                     .child(t(lang, "Language", "界面语言")),
                                             )
                                             .child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(language_button(
-                                                        "language-chinese",
-                                                        "中文",
-                                                        lang == Language::Chinese,
-                                                        cx,
-                                                        {
-                                                            let weak = weak.clone();
-                                                            move |_, window, cx| {
-                                                                window.close_dialog(cx);
-                                                                let _ = weak.update(cx, |this, cx| {
-                                                                    this.language = Language::Chinese;
-                                                                    Settings { language: Language::Chinese }.save();
-                                                                    cx.notify();
-                                                                    this.open_settings_dialog(window, cx);
-                                                                });
-                                                            }
-                                                        },
-                                                    ))
-                                                    .child(language_button(
-                                                        "language-english",
-                                                        "English",
-                                                        lang == Language::English,
-                                                        cx,
-                                                        {
-                                                            let weak = weak.clone();
-                                                            move |_, window, cx| {
-                                                                window.close_dialog(cx);
-                                                                let _ = weak.update(cx, |this, cx| {
-                                                                    this.language = Language::English;
-                                                                    Settings { language: Language::English }.save();
-                                                                    cx.notify();
-                                                                    this.open_settings_dialog(window, cx);
-                                                                });
-                                                            }
-                                                        },
+                                                Select::new(&language_select)
+                                                    .w(px(180.))
+                                                    .accessibility_label(t(
+                                                        lang,
+                                                        "Interface language",
+                                                        "界面语言",
                                                     )),
                                             ),
                                     )
@@ -1226,9 +1231,6 @@ impl Render for Builder {
         } else {
             div().into_any_element()
         };
-        let exporting = self.exporting.get();
-        let scrim = self.export_dialog_open || exporting;
-
         v_flex()
             .id("app-root")
             .size_full()
@@ -1295,16 +1297,6 @@ impl Render for Builder {
             )
             .child(self.render_toolbar(window, cx))
             .child(content)
-            .when(scrim, |this| {
-                this.child(
-                    div()
-                        .id("export-scrim")
-                        .absolute()
-                        .inset_0()
-                        .bg(cx.theme().overlay.opacity(0.88))
-                        .on_click(|_, _, cx| cx.stop_propagation()),
-                )
-            })
     }
 }
 
@@ -2150,6 +2142,13 @@ fn selected_row_bg() -> gpui_kit::Hsla {
     gpui_kit::hsla(0.07, 0.82, 0.55, 0.24)
 }
 
+fn sync_theme(window: Option<&mut Window>, cx: &mut App) {
+    Theme::sync_system_appearance(window, cx);
+    Theme::update(cx, |theme| {
+        theme.overlay = gpui_kit::hsla(0., 0., 0., 0.64);
+    });
+}
+
 fn t(lang: Language, en: &'static str, zh: &'static str) -> &'static str {
     match lang {
         Language::Chinese => zh,
@@ -2328,33 +2327,6 @@ fn pill_button(id: &'static str, label: &'static str, primary: bool, cx: &App) -
         .px(px(18.))
         .shadow_md();
     if primary {
-        button.primary()
-    } else {
-        button
-            .ghost()
-            .bg(cx.theme().background.opacity(0.72))
-            .border_1()
-            .border_color(cx.theme().border.opacity(0.9))
-    }
-}
-
-fn language_button<F>(
-    id: &'static str,
-    label: &'static str,
-    selected: bool,
-    cx: &App,
-    on_click: F,
-) -> Button
-where
-    F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-{
-    let button = Button::new(id)
-        .label(label)
-        .rounded_full()
-        .h(px(32.))
-        .px(px(16.))
-        .on_click(on_click);
-    if selected {
         button.primary()
     } else {
         button
