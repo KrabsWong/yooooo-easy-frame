@@ -33,7 +33,6 @@ use std::{
 actions!(apng_builder, [SelectPreviousFrame, SelectNextFrame]);
 
 const APP_BACKGROUND: &[u8] = include_bytes!("../resources/easy-frame-logo.png");
-const APP_LOGO: &[u8] = include_bytes!("../resources/easy-frame-logo.svg");
 const EMPTY_STATE_BORDER: &[u8] = include_bytes!("../resources/empty-state-border.svg");
 
 enum BootState {
@@ -114,6 +113,7 @@ pub struct PreviewWindow {
 
 pub struct SettingsWindow {
     main: WeakEntity<Builder>,
+    logo: Arc<gpui_kit::Image>,
     automatic: bool,
     language: Language,
     tab: SettingsTab,
@@ -138,6 +138,10 @@ impl SettingsWindow {
 
         Self {
             main,
+            logo: Arc::new(gpui_kit::Image::from_bytes(
+                gpui_kit::ImageFormat::Png,
+                APP_BACKGROUND.to_vec(),
+            )),
             automatic: settings.automatic_updates,
             language,
             tab: SettingsTab::General,
@@ -207,7 +211,7 @@ impl Render for SettingsWindow {
                             .child(
                                 v_flex()
                                     .w_full()
-                                    .gap_4()
+                                    .gap_3()
                                     .when(self.tab == SettingsTab::General, |this| {
                                         this.child(
                                             h_flex()
@@ -314,11 +318,10 @@ impl Render for SettingsWindow {
                                                 .items_center()
                                                 .gap_2()
                                                 .child(
-                                                    svg()
-                                                        .data(APP_LOGO)
+                                                    img(self.logo.clone())
                                                         .w(px(88.))
                                                         .h(px(88.))
-                                                        .text_color(cx.theme().foreground),
+                                                        .object_fit(ObjectFit::Contain),
                                                 )
                                                 .child(
                                                     div()
@@ -330,8 +333,8 @@ impl Render for SettingsWindow {
                                         .child(
                                             v_flex()
                                                 .w_full()
-                                                .gap_1()
-                                                .mt_2()
+                                                .gap_0()
+                                                .mt_1()
                                                 .child(
                                                     div()
                                                         .text_size(px(13.))
@@ -1313,10 +1316,10 @@ impl Builder {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(
                 None,
-                size(px(420.), px(270.)),
+                size(px(420.), px(320.)),
                 cx,
             )),
-            window_min_size: Some(size(px(380.), px(240.))),
+            window_min_size: Some(size(px(380.), px(280.))),
             titlebar: Some(TitlebarOptions {
                 title: Some(t(language, "Easy Frame Settings", "Easy Frame 设置").into()),
                 appears_transparent: false,
@@ -1375,14 +1378,6 @@ impl Render for Builder {
             .relative()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(
-                img(self.background_image.clone())
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .object_fit(ObjectFit::Contain)
-                    .opacity(0.08),
-            )
             .on_action(cx.listener(|this, _: &crate::CloseWindow, window, cx| {
                 this.close_preview(cx);
                 window.minimize_window();
@@ -1596,28 +1591,43 @@ impl Builder {
                             }),
                     )
                     .child(
-                        div()
-                            .text_align(TextAlign::Center)
-                            .text_size(px(16.))
-                            .font_medium()
-                            .mb(px(4.))
-                            .child(t(lang, "Drop PNG frames into the window", "将 PNG 图片拖拽到窗口中")),
-                    )
-                    .child(
-                        div()
-                            .text_align(TextAlign::Center)
-                            .text_size(px(12.))
-                            .text_color(cx.theme().muted_foreground)
-                            .mb(px(24.))
-                            .child(t(lang, "List order is the animation playback order", "列表顺序即动画播放顺序")),
-                    )
-                    .child(
-                        Button::new("add-images")
-                            .label(t(lang, "Add Images", "添加图片"))
-                            .primary()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_file_picker(window, cx);
-                            })),
+                        v_flex()
+                            .w_full()
+                            .h_full()
+                            .p_5()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                img(self.background_image.clone())
+                                    .w(px(64.))
+                                    .h(px(64.))
+                                    .object_fit(ObjectFit::Contain)
+                                    .mb(px(16.)),
+                            )
+                            .child(
+                                div()
+                                    .text_align(TextAlign::Center)
+                                    .text_size(px(16.))
+                                    .font_medium()
+                                    .mb(px(4.))
+                                    .child(t(lang, "Drop PNG frames into the window", "将 PNG 图片拖拽到窗口中")),
+                            )
+                            .child(
+                                div()
+                                    .text_align(TextAlign::Center)
+                                    .text_size(px(12.))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .mb(px(24.))
+                                    .child(t(lang, "List order is the animation playback order", "列表顺序即动画播放顺序")),
+                            )
+                            .child(
+                                Button::new("add-images")
+                                    .label(t(lang, "Add Images", "添加图片"))
+                                    .primary()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_file_picker(window, cx);
+                                    })),
+                            ),
                     ),
             )
     }
@@ -2527,7 +2537,7 @@ fn dependency_row(label: &str, value: String, cx: &App) -> impl IntoElement {
     h_flex()
         .w_full()
         .gap_2()
-        .py(px(1.))
+        .py(px(0.))
         .items_center()
         .child(
             div()
@@ -2543,7 +2553,7 @@ fn dependency_row(label: &str, value: String, cx: &App) -> impl IntoElement {
                 .min_w_0()
                 .truncate()
                 .text_size(px(12.))
-                .line_height(px(17.))
+                .line_height(px(16.))
                 .text_color(cx.theme().foreground)
                 .child(value),
         )

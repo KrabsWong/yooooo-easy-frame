@@ -10,6 +10,10 @@ use gpui_kit::*;
 use settings::Settings;
 use std::time::Duration;
 
+unsafe extern "C" {
+    fn easy_frame_set_dock_icon(path: *const std::ffi::c_char);
+}
+
 actions!(
     easy_frame_actions,
     [
@@ -28,6 +32,7 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            set_dock_icon();
             updater::start();
             updater::set_automatic(Settings::load().automatic_updates);
 
@@ -124,4 +129,23 @@ fn main() {
             })
             .detach();
         });
+}
+
+fn set_dock_icon() {
+    let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .and_then(|macos| macos.parent())
+                .map(std::path::Path::to_path_buf)
+        })
+        .map(|bundle| bundle.join("Resources/AppIcon.icns"))
+        .filter(|path| path.exists())
+    else {
+        return;
+    };
+    let Ok(path) = std::ffi::CString::new(path.to_string_lossy().as_bytes()) else {
+        return;
+    };
+    unsafe { easy_frame_set_dock_icon(path.as_ptr()) };
 }

@@ -12,6 +12,8 @@
     <string>com.yooooo.apng-builder</string>
     <key>CFBundleName</key>
     <string>Easy Frame</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

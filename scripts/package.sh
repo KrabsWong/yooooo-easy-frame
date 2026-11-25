@@ -22,6 +22,7 @@ cargo build --locked --release --target aarch64-apple-darwin --features sparkle
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/apng-builder"
+cp resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp resources/bin/ffmpeg "$APP/Contents/Resources/ffmpeg"
 ditto resources/licenses "$APP/Contents/Resources/licenses"
 chmod +x "$APP/Contents/Resources/ffmpeg"
