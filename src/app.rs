@@ -1,6 +1,8 @@
 use crate::{
     export::{self, Environment},
     frame::{self, Frame},
+    settings::{Language, Settings},
+    updater,
 };
 use gpui_kit::{
     base::animation::{EffectTransition, ease_out_cubic},
@@ -9,9 +11,10 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
         button::{Button, ButtonVariants as _},
-        input::{Input, InputState},
+        input::{Input, InputEvent, InputState},
         notification::Notification,
         spinner::Spinner,
+        tab::{Tab, TabBar},
         theme::Theme,
     },
     prelude::*,
@@ -25,6 +28,8 @@ use std::{
 };
 
 actions!(apng_builder, [SelectPreviousFrame, SelectNextFrame]);
+
+const EMPTY_STATE_WATERMARK: &[u8] = include_bytes!("../resources/easy-frame-watermark.svg");
 
 enum BootState {
     Checking,
@@ -42,6 +47,12 @@ enum DropPosition {
 enum MoveDirection {
     Up,
     Down,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    About,
 }
 
 impl DropPosition {
@@ -67,6 +78,8 @@ pub struct Builder {
     export_dialog_open: bool,
     interval_input: Option<Entity<InputState>>,
     quality_input: Option<Entity<InputState>>,
+    filename_input: Option<Entity<InputState>>,
+    export_subscriptions: Vec<Subscription>,
     _appearance_subscription: Option<Subscription>,
     _quit_subscription: Option<Subscription>,
     _visibility_subscription: Option<Subscription>,
@@ -75,7 +88,9 @@ pub struct Builder {
     preview_state: Entity<PreviewState>,
     preview_window: Option<AnyWindowHandle>,
     preview_request: Option<usize>,
+    last_preview_index: Option<usize>,
     preview_seq: u64,
+    language: Language,
 }
 
 #[derive(Default)]
@@ -86,6 +101,7 @@ pub struct PreviewState {
 pub struct PreviewWindow {
     state: Entity<PreviewState>,
     _state_subscription: Subscription,
+    language: Language,
 }
 
 impl Render for PreviewWindow {
@@ -115,7 +131,7 @@ impl Render for PreviewWindow {
                     .overflow_y_scroll()
                     .v_flex()
                     .gap_1()
-                    .children(preview_details(&frame, cx)),
+            .children(preview_details(&frame, self.language, cx)),
             )
             .into_any_element()
     }
@@ -134,6 +150,7 @@ impl Builder {
 
         let list_focus = cx.focus_handle();
         let preview_state = cx.new(|_| PreviewState::default());
+        let language = Settings::load().language;
         let this = cx.new(|_| Self {
             boot: BootState::Checking,
             frames: Vec::new(),
@@ -148,6 +165,8 @@ impl Builder {
             export_dialog_open: false,
             interval_input: None,
             quality_input: None,
+            filename_input: None,
+            export_subscriptions: Vec::new(),
             _appearance_subscription: Some(appearance_subscription),
             _quit_subscription: None,
             _visibility_subscription: None,
@@ -156,7 +175,9 @@ impl Builder {
             preview_state,
             preview_window: None,
             preview_request: None,
+            last_preview_index: None,
             preview_seq: 0,
+            language,
         });
 
         let weak = this.downgrade();
@@ -251,13 +272,13 @@ impl Builder {
         let (added, skipped) = self.add_paths(paths.paths().to_vec());
         if added > 0 {
             window.push_notification(
-                Notification::success(format!("Added {added} PNG frames")),
+                Notification::success(added_frames_notice(self.language, added)),
                 cx,
             );
         }
         if skipped > 0 {
             window.push_notification(
-                Notification::warning(format!("Skipped {skipped} non-PNG or unreadable files")),
+                Notification::warning(skipped_frames_notice(self.language, skipped)),
                 cx,
             );
         }
@@ -266,11 +287,12 @@ impl Builder {
 
     fn open_file_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_preview(cx);
+        let lang = self.language;
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Select PNG frames".into()),
+            prompt: Some(t(self.language, "Select PNG frames", "选择 PNG 图片").into()),
         });
         let weak = cx.weak_entity();
         let window_handle = window.window_handle();
@@ -283,15 +305,13 @@ impl Builder {
                         let _ = cx.update_window(window_handle, |_, window, cx| {
                             if added > 0 {
                                 window.push_notification(
-                                    Notification::success(format!("Added {added} PNG frames")),
+                                    Notification::success(added_frames_notice(this.language, added)),
                                     cx,
                                 );
                             }
                             if skipped > 0 {
                                 window.push_notification(
-                                    Notification::warning(format!(
-                                        "Skipped {skipped} non-PNG or unreadable files"
-                                    )),
+                                    Notification::warning(skipped_frames_notice(this.language, skipped)),
                                     cx,
                                 );
                             }
@@ -303,7 +323,7 @@ impl Builder {
                 Ok(Err(error)) => {
                     let _ = cx.update_window(window_handle, |_, window, cx| {
                         window.push_notification(
-                            Notification::error(format!("Failed to open file picker: {error}")),
+                                                Notification::error(picker_error(lang, error)),
                             cx,
                         );
                     });
@@ -311,7 +331,7 @@ impl Builder {
                 Err(error) => {
                     let _ = cx.update_window(window_handle, |_, window, cx| {
                         window.push_notification(
-                            Notification::error(format!("Failed to open file picker: {error}")),
+                                                Notification::error(picker_error(lang, error)),
                             cx,
                         );
                     });
@@ -329,6 +349,7 @@ impl Builder {
         let target = if from < to { to - 1 } else { to };
         self.frames.insert(target, frame);
         self.selected = Some(target);
+        self.last_preview_index = Some(target);
         self.dragging = None;
         self.drop_target = None;
         self.hovered_row = None;
@@ -418,6 +439,7 @@ impl Builder {
             self.close_preview(cx);
             return;
         };
+        self.last_preview_index = Some(target);
         self.preview_seq = self.preview_seq.wrapping_add(1);
         let token = self.preview_seq;
         self.preview_request = Some(target);
@@ -451,6 +473,7 @@ impl Builder {
     }
 
     fn show_preview(&mut self, frame: Frame, window: &mut Window, cx: &mut Context<Self>) {
+        let language = self.language;
         let state = self.preview_state.clone();
         state.update(cx, |state, cx| {
             state.frame = Some(frame);
@@ -477,6 +500,7 @@ impl Builder {
                     PreviewWindow {
                         state: state.clone(),
                         _state_subscription: subscription,
+                        language,
                     }
                 })
             })
@@ -511,6 +535,7 @@ impl Builder {
             Some(index.min(self.frames.len() - 1))
         };
         self.hovered_row = None;
+        self.last_preview_index = self.selected;
         self.close_preview(cx);
         cx.notify();
     }
@@ -523,6 +548,7 @@ impl Builder {
         self.drop_target = None;
         self.recent_move = None;
         self.hovered_row = None;
+        self.last_preview_index = None;
         self.close_preview(cx);
         cx.notify();
     }
@@ -532,15 +558,20 @@ impl Builder {
             return;
         }
         let weak = cx.weak_entity();
+        let lang = self.language;
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("Clear all frames?")
+                .title(t(lang, "Clear all frames?", "清空所有图片？"))
                 .width(px(390.))
                 .child(
                     div()
                         .text_size(px(13.))
                         .line_height(px(20.))
-                        .child("All frames will be removed from the list."),
+                        .child(t(
+                            lang,
+                            "All frames will be removed from the list.",
+                            "所有图片都会从列表中移除。",
+                        )),
                 )
                 .footer(
                     h_flex()
@@ -548,13 +579,13 @@ impl Builder {
                         .justify_end()
                         .child(
                             Button::new("clear-cancel")
-                                .label("Cancel")
+                                .label(t(lang, "Cancel", "取消"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child({
                             let weak = weak.clone();
                             Button::new("clear-confirm")
-                                .label("Clear all")
+                                .label(t(lang, "Clear all", "全部清空"))
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     let _ =
@@ -572,16 +603,17 @@ impl Builder {
         };
         let name = frame.name.clone();
         let weak = cx.weak_entity();
+        let lang = self.language;
 
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("Delete this image?")
+                .title(t(lang, "Delete this image?", "删除这张图片？"))
                 .width(px(390.))
                 .child(
                     div()
                         .text_size(px(13.))
                         .line_height(px(20.))
-                        .child(format!("“{name}” will be removed from the frame list.")),
+                        .child(delete_notice(lang, &name)),
                 )
                 .footer(
                     h_flex()
@@ -589,13 +621,13 @@ impl Builder {
                         .justify_end()
                         .child(
                             Button::new("delete-cancel")
-                                .label("Cancel")
+                                .label(t(lang, "Cancel", "取消"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child({
                             let weak = weak.clone();
                             Button::new("delete-confirm")
-                                .label("Delete")
+                                .label(t(lang, "Delete", "删除"))
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     let _ = weak.update(cx, |this, cx| this.delete_frame(index, cx));
@@ -608,13 +640,36 @@ impl Builder {
 
     fn open_export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.frames.is_empty() {
-            window.push_notification(Notification::warning("Add PNG frames first"), cx);
+            window.push_notification(
+                Notification::warning(t(
+                    self.language,
+                    "Add PNG frames first",
+                    "请先添加 PNG 图片",
+                )),
+                cx,
+            );
             return;
         }
+        let lang = self.language;
         self.hovered_row = None;
         self.close_preview(cx);
         self.export_dialog_open = true;
+        self.export_subscriptions.clear();
         cx.notify();
+
+        let first = &self.frames[0];
+        let default_dir = first
+            .path
+            .parent()
+            .map(StdPath::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let default_stem = first
+            .path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "animation".into());
+        let output_dimensions = format!("{} × {} px", first.info.width, first.info.height);
+        let frame_count = self.frames.len();
 
         let interval_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -626,35 +681,94 @@ impl Builder {
                 .default_value("80")
                 .placeholder("1-100")
         });
+        let filename_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(format!("{default_stem}-10-80.png"))
+                .placeholder("animation-10-80.png")
+        });
         self.interval_input = Some(interval_input.clone());
         self.quality_input = Some(quality_input.clone());
+        self.filename_input = Some(filename_input.clone());
 
         let weak = cx.weak_entity();
         let exporting = self.exporting.clone();
-        let window_handle = window.window_handle();
+        let main_window: AnyWindowHandle = window.window_handle().into();
         let frame_paths: Vec<PathBuf> = self.frames.iter().map(|frame| frame.path.clone()).collect();
-        let first = &self.frames[0];
         let ffmpeg = match &self.boot {
             BootState::Ready(environment) => environment.ffmpeg.clone(),
             _ => PathBuf::from("ffmpeg"),
         };
-        let default_dir = first
-            .path
-            .parent()
-            .map(StdPath::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let default_name = first
-            .path
-            .file_stem()
-            .map(|stem| format!("{}.apng", stem.to_string_lossy()))
-            .unwrap_or_else(|| "animation.apng".into());
-        let output_dimensions = format!("{} × {} px", first.info.width, first.info.height);
-        let frame_count = self.frames.len();
+        let filename_edited = Rc::new(Cell::new(false));
+
+        let interval_for_name = interval_input.clone();
+        let quality_for_name = quality_input.clone();
+        let interval_filename = filename_input.clone();
+        let interval_edited = filename_edited.clone();
+        let interval_window = main_window;
+        let interval_stem = default_stem.clone();
+        let interval_subscription = cx.subscribe(&interval_input, move |_, _, event: &InputEvent, cx| {
+            if !matches!(event, InputEvent::Change) || interval_edited.get() {
+                return;
+            }
+            let name = suggested_export_filename(&interval_stem, &interval_for_name, &quality_for_name, cx);
+            let _ = cx.update_window(interval_window, |_, window, cx| {
+                interval_filename.update(cx, |input, cx| input.set_value(name, window, cx));
+            });
+        });
+
+        let quality_for_name = quality_input.clone();
+        let interval_for_quality = interval_input.clone();
+        let quality_filename = filename_input.clone();
+        let quality_edited = filename_edited.clone();
+        let quality_window = main_window;
+        let quality_stem = default_stem.clone();
+        let quality_subscription = cx.subscribe(&quality_input, move |_, _, event: &InputEvent, cx| {
+            if !matches!(event, InputEvent::Change) || quality_edited.get() {
+                return;
+            }
+            let name = suggested_export_filename(&quality_stem, &interval_for_quality, &quality_for_name, cx);
+            let _ = cx.update_window(quality_window, |_, window, cx| {
+                quality_filename.update(cx, |input, cx| input.set_value(name, window, cx));
+            });
+        });
+
+        let quality_guard = quality_input.clone();
+        let quality_guard_window = main_window;
+        let quality_guard_subscription = cx.subscribe(&quality_input, move |_, _, event: &InputEvent, cx| {
+            let raw = quality_guard.read(cx).value().trim().to_string();
+            let normalized = match raw.parse::<i32>() {
+                Ok(value) if value < 1 => "1".to_string(),
+                Ok(value) if value > 100 => "100".to_string(),
+                Ok(_) => return,
+                Err(_) => {
+                    if matches!(event, InputEvent::Change) {
+                        return;
+                    }
+                    "1".to_string()
+                }
+            };
+            let _ = cx.update_window(quality_guard_window, |_, window, cx| {
+                quality_guard.update(cx, |input, cx| input.set_value(normalized, window, cx));
+            });
+        });
+
+        let filename_edited_sub = filename_edited.clone();
+        let filename_subscription = cx.subscribe(&filename_input, move |_, _, event: &InputEvent, _| {
+            if matches!(event, InputEvent::Change) {
+                filename_edited_sub.set(true);
+            }
+        });
+        self.export_subscriptions = vec![
+            interval_subscription,
+            quality_subscription,
+            quality_guard_subscription,
+            filename_subscription,
+        ];
 
         window.open_dialog(cx, move |dialog, _, cx| {
             let loading = exporting.get();
             dialog
-                .title("Export APNG")
+                .title(t(lang, "Export APNG", "导出 APNG"))
                 .centered()
                 .overlay(true)
                 .overlay_closable(false)
@@ -665,24 +779,39 @@ impl Builder {
                     v_flex()
                         .gap_4()
                         .child(setting_field(
-                            "Frame interval",
-                            "Milliseconds, default 10 ms",
+                            t(lang, "Frame interval", "帧间隔"),
+                            t(lang, "Milliseconds, default 10 ms", "单位毫秒，默认 10 ms"),
                             &interval_input,
+                            loading,
                             cx,
                         ))
                         .child(setting_field(
-                            "Quality",
-                            "1-100; APNG is lossless, this controls PNG compression",
+                            t(lang, "Quality", "质量"),
+                            t(
+                                lang,
+                                "1-100; higher preserves more colors and produces a larger file",
+                                "1-100；越高保留颜色越多，文件通常越大",
+                            ),
                             &quality_input,
+                            loading,
+                            cx,
+                        ))
+                        .child(setting_field(
+                            t(lang, "File name", "文件名"),
+                            t(
+                                lang,
+                                "Editable. Defaults to name-interval-quality.png.",
+                                "可编辑，默认为 名称-间隔-质量.png。",
+                            ),
+                            &filename_input,
+                            loading,
                             cx,
                         ))
                         .child(
                             div()
                                 .text_size(px(12.))
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "Output: {output_dimensions} · {frame_count} frames"
-                                )),
+                                .child(export_output_notice(lang, &output_dimensions, frame_count)),
                         )
                 )
                 .footer(
@@ -691,7 +820,7 @@ impl Builder {
                         .justify_end()
                         .child(
                             Button::new("export-cancel")
-                                .label("Cancel")
+                                .label(t(lang, "Cancel", "取消"))
                                 .disabled(loading)
                                 .on_click({
                                     let weak = weak.clone();
@@ -709,13 +838,17 @@ impl Builder {
                             let exporting = exporting.clone();
                             let interval_input = interval_input.clone();
                             let quality_input = quality_input.clone();
+                            let filename_input = filename_input.clone();
                             let frame_paths = frame_paths.clone();
                             let default_dir = default_dir.clone();
-                            let default_name = default_name.clone();
-                                            let ffmpeg = ffmpeg.clone();
+                            let ffmpeg = ffmpeg.clone();
 
                             Button::new("export-confirm")
-                                .label(if loading { "Exporting..." } else { "Export" })
+                                .label(if loading {
+                                    t(lang, "Exporting...", "导出中...")
+                                } else {
+                                    t(lang, "Export", "导出")
+                                })
                                 .primary()
                                 .loading(loading)
                                 .disabled(loading)
@@ -724,20 +857,52 @@ impl Builder {
                                         return;
                                     }
 
-                                    let interval = interval_input.read(cx).value().trim().parse::<u16>();
-                                    let quality = quality_input.read(cx).value().trim().parse::<u8>();
-                                    let (Ok(interval), Ok(quality)) = (interval, quality) else {
+                                    let Ok(interval) = interval_input.read(cx).value().trim().parse::<u16>() else {
                                         window.push_notification(
-                                            Notification::error("Enter a valid interval and quality"),
+                                            Notification::error(t(
+                                                lang,
+                                                "Enter a valid frame interval",
+                                                "请输入正确的帧间隔",
+                                            )),
                                             cx,
                                         );
                                         return;
                                     };
-                                    if !(1..=10_000).contains(&interval) || !(1..=100).contains(&quality) {
+                                    if !(1..=10_000).contains(&interval) {
                                         window.push_notification(
                                             Notification::error(
-                                                "Interval must be 1-10000 ms and quality 1-100",
+                                                t(
+                                                    lang,
+                                                    "Interval must be 1-10000 ms",
+                                                    "间隔需在 1-10000 ms",
+                                                ),
                                             ),
+                                            cx,
+                                        );
+                                        return;
+                                    }
+                                    let quality_raw = quality_input.read(cx).value().trim().to_string();
+                                    let quality = quality_raw
+                                        .parse::<i32>()
+                                        .unwrap_or(1)
+                                        .clamp(1, 100) as u8;
+                                    if quality.to_string() != quality_raw {
+                                        let _ = quality_input.update(cx, |input, cx| {
+                                            input.set_value(quality.to_string(), window, cx);
+                                        });
+                                    }
+                                    let filename = filename_input
+                                        .read(cx)
+                                        .value()
+                                        .trim()
+                                        .to_string();
+                                    if filename.is_empty() {
+                                        window.push_notification(
+                                            Notification::error(t(
+                                                lang,
+                                                "Enter a file name",
+                                                "请输入文件名",
+                                            )),
                                             cx,
                                         );
                                         return;
@@ -746,11 +911,11 @@ impl Builder {
                                     exporting.set(true);
                                     let _ = weak.update(cx, |_, cx| cx.notify());
                                     let receiver =
-                                        cx.prompt_for_new_path(&default_dir, Some(&default_name));
+                                        cx.prompt_for_new_path(&default_dir, Some(&filename));
                                     let weak = weak.clone();
                                     let frame_paths = frame_paths.clone();
-                                                    let ffmpeg = ffmpeg.clone();
-                                    let handle = window_handle;
+                                    let ffmpeg = ffmpeg.clone();
+                                    let handle = main_window;
 
                                     cx.spawn(async move |cx| {
                                         let output = match receiver.await {
@@ -771,9 +936,7 @@ impl Builder {
                                                 });
                                                 let _ = cx.update_window(handle, |_, window, cx| {
                                                     window.push_notification(
-                                                        Notification::error(format!(
-                                                            "Failed to choose save path: {error}"
-                                                        )),
+                                                        Notification::error(save_path_error(lang, error)),
                                                         cx,
                                                     );
                                                 });
@@ -787,9 +950,7 @@ impl Builder {
                                                 });
                                                 let _ = cx.update_window(handle, |_, window, cx| {
                                                     window.push_notification(
-                                                        Notification::error(format!(
-                                                            "Failed to choose save path: {error}"
-                                                        )),
+                                                        Notification::error(save_path_error(lang, error)),
                                                         cx,
                                                     );
                                                 });
@@ -824,20 +985,225 @@ impl Builder {
                                             match result {
                                                 Ok(()) => window.push_notification(
                                                     Notification::success(format!(
-                                                        "APNG exported to {}",
-                                                        output.display()
+                                                        "{}",
+                                                        match lang {
+                                                            Language::Chinese => format!("APNG 已导出到 {}", output.display()),
+                                                            Language::English => format!("APNG exported to {}", output.display()),
+                                                        }
                                                     )),
                                                     cx,
                                                 ),
-                                                Err(error) => window.push_notification(
-                                                    Notification::error(error),
-                                                    cx,
-                                                ),
+                                                Err(error) => {
+                                                    let message = friendly_export_error(lang, &error);
+                                                    if error.contains("导出超时") {
+                                                        window.push_notification(
+                                                            Notification::warning(message),
+                                                            cx,
+                                                        );
+                                                    } else {
+                                                        window.push_notification(
+                                                            Notification::error(message),
+                                                            cx,
+                                                        );
+                                                    }
+                                                }
                                             }
                                         });
                                     })
                                     .detach();
                                 })
+                        }),
+                )
+        });
+    }
+
+    fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let lang = self.language;
+        let weak = cx.weak_entity();
+        let app_version = env!("CARGO_PKG_VERSION").to_string();
+        let update_available = updater::version();
+        let automatic = updater::automatic();
+        let updater_ready = updater::available();
+        let ffmpeg_version = match &self.boot {
+            BootState::Ready(environment) => Some(environment.version.clone()),
+            _ => None,
+        };
+        let tab = Rc::new(Cell::new(SettingsTab::General));
+
+        window.open_dialog(cx, move |dialog, _, cx| {
+            dialog
+                .title(t(lang, "Settings", "设置"))
+                .margin_top(px(100.))
+                .width(px(420.))
+                .child(
+                    v_flex()
+                        .gap_4()
+                        .child(
+                            TabBar::new("settings-tabs")
+                                .underline()
+                                .selected_index(match tab.get() {
+                                    SettingsTab::General => 0,
+                                    SettingsTab::About => 1,
+                                })
+                                .child(Tab::new().label(t(lang, "General", "常规")))
+                                .child(Tab::new().label(t(lang, "About", "关于")))
+                                .on_click({
+                                    let tab = tab.clone();
+                                    move |index, window, _| {
+                                        tab.set(if *index == 0 {
+                                            SettingsTab::General
+                                        } else {
+                                            SettingsTab::About
+                                        });
+                                        window.refresh();
+                                    }
+                                }),
+                        )
+                        .when(tab.get() == SettingsTab::General, |this| {
+                            this.child(
+                                v_flex()
+                                    .gap_4()
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_medium()
+                                                    .child(t(lang, "Language", "界面语言")),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .child(language_button(
+                                                        "language-chinese",
+                                                        "中文",
+                                                        lang == Language::Chinese,
+                                                        cx,
+                                                        {
+                                                            let weak = weak.clone();
+                                                            move |_, window, cx| {
+                                                                window.close_dialog(cx);
+                                                                let _ = weak.update(cx, |this, cx| {
+                                                                    this.language = Language::Chinese;
+                                                                    Settings { language: Language::Chinese }.save();
+                                                                    cx.notify();
+                                                                    this.open_settings_dialog(window, cx);
+                                                                });
+                                                            }
+                                                        },
+                                                    ))
+                                                    .child(language_button(
+                                                        "language-english",
+                                                        "English",
+                                                        lang == Language::English,
+                                                        cx,
+                                                        {
+                                                            let weak = weak.clone();
+                                                            move |_, window, cx| {
+                                                                window.close_dialog(cx);
+                                                                let _ = weak.update(cx, |this, cx| {
+                                                                    this.language = Language::English;
+                                                                    Settings { language: Language::English }.save();
+                                                                    cx.notify();
+                                                                    this.open_settings_dialog(window, cx);
+                                                                });
+                                                            }
+                                                        },
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(px(13.))
+                                                    .font_medium()
+                                                    .child(t(lang, "Updates", "更新")),
+                                            )
+                                            .when_some(update_available.clone(), |this, version| {
+                                                this.child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .text_color(warm_accent())
+                                                        .child(format!(
+                                                            "{}: {}",
+                                                            t(lang, "Update available", "有可用更新"),
+                                                            version
+                                                        )),
+                                                )
+                                            })
+                                            .child(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .child(
+                                                        Button::new("check-updates")
+                                                            .label(t(lang, "Check for Updates", "检查更新"))
+                                                            .disabled(!updater_ready)
+                                                            .on_click(|_, _, _| updater::check()),
+                                                    )
+                                                    .child(
+                                                        Button::new("automatic-updates")
+                                                            .label(t(
+                                                                lang,
+                                                                if automatic { "Automatic checks: On" } else { "Automatic checks: Off" },
+                                                                if automatic { "自动检查：开" } else { "自动检查：关" },
+                                                            ))
+                                                            .disabled(!updater_ready)
+                                                            .on_click(move |_, window, cx| {
+                                                                updater::set_automatic(!automatic);
+                                                                window.close_dialog(cx);
+                                                            }),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                        })
+                        .when(tab.get() == SettingsTab::About, |this| {
+                            let components = [
+                                "GPUI / gpui-kit 0.11.0",
+                                "Sparkle 2.9.3",
+                                "FFmpeg 7.1.1 (LGPL 2.1+)",
+                            ];
+                            this.child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        compact_detail_row(
+                                            t(lang, "Version", "版本"),
+                                            app_version.clone(),
+                                            cx,
+                                        )
+                                    )
+                                    .child(
+                                        compact_detail_row(
+                                            t(lang, "Dependency", "依赖"),
+                                            format!(
+                                                "{} ffmpeg {}",
+                                                t(lang, "Bundled", "内置"),
+                                                ffmpeg_version.clone().unwrap_or_else(|| {
+                                                    t(lang, "Not detected", "未检测到").to_string()
+                                                })
+                                            ),
+                                            cx,
+                                        )
+                                    )
+                                    .child(
+                                        div()
+                                            .mt_1()
+                                            .text_size(px(13.))
+                                            .font_medium()
+                                            .child(t(lang, "Open-source components", "开源组件")),
+                                    )
+                                    .children(components.into_iter().map(|component| {
+                                        div()
+                                            .text_size(px(12.))
+                                            .line_height(px(18.))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("• {component}"))
+                                    })),
+                            )
                         }),
                 )
         });
@@ -864,6 +1230,7 @@ impl Render for Builder {
         let scrim = self.export_dialog_open || exporting;
 
         v_flex()
+            .id("app-root")
             .size_full()
             .relative()
             .bg(cx.theme().background)
@@ -943,11 +1310,6 @@ impl Render for Builder {
 
 impl Builder {
     fn render_toolbar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let environment = match &self.boot {
-            BootState::Ready(environment) => Some(format!("ffmpeg {}", environment.version)),
-            _ => None,
-        };
-
         h_flex()
             .h(px(48.))
             .min_h(px(48.))
@@ -976,27 +1338,28 @@ impl Builder {
                             .child("Easy Frame"),
                     )
             )
-            .when_some(environment, |this, text| {
-                this.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            Icon::new(Lucide::CircleCheck)
-                                .with_size(px(12.))
-                                .text_color(cx.theme().success_foreground),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(text),
-                        ),
-                )
-            })
+            .child(
+                div()
+                    .id("open-settings")
+                    .w(px(28.))
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_settings_dialog(window, cx);
+                    }))
+                    .child(
+                        Icon::new(Lucide::Settings)
+                            .with_size(px(15.))
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
     }
 
     fn render_checking(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.language;
         div()
             .flex_1()
             .min_h_0()
@@ -1010,13 +1373,13 @@ impl Builder {
                 div()
                     .text_size(px(15.))
                     .font_medium()
-                    .child("Checking local environment"),
+                    .child(t(lang, "Checking local environment", "正在检查本地环境")),
             )
             .child(
                 div()
                     .text_size(px(13.))
                     .text_color(cx.theme().muted_foreground)
-                    .child("Verifying ffmpeg installation and version"),
+                    .child(t(lang, "Verifying ffmpeg installation and version", "正在验证 ffmpeg 安装和版本")),
             )
     }
 
@@ -1026,6 +1389,7 @@ impl Builder {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let lang = self.language;
         div()
             .flex_1()
             .min_h_0()
@@ -1043,7 +1407,7 @@ impl Builder {
                 div()
                     .text_size(px(18.))
                     .font_medium()
-                    .child("Environment not ready"),
+                    .child(t(lang, "Unsupported system", "当前系统不受支持")),
             )
             .child(
                 div()
@@ -1052,23 +1416,7 @@ impl Builder {
                     .text_size(px(13.))
                     .line_height(px(19.))
                     .text_color(cx.theme().muted_foreground)
-                    .child(message.to_string()),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .px_4()
-                    .py_3()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().muted)
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .line_height(px(20.))
-                            .child("Install ffmpeg 5.0 or newer:\nbrew install ffmpeg\n\nThen restart Easy Frame."),
-                    ),
+                    .child(localize_error(lang, message)),
             )
     }
 
@@ -1083,6 +1431,7 @@ impl Builder {
     }
 
     fn render_empty(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.language;
         div()
             .size_full()
             .flex()
@@ -1092,10 +1441,11 @@ impl Builder {
                 v_flex()
                     .w(px(340.))
                     .h(px(230.))
-                    .gap_3()
                     .p_5()
                     .items_center()
                     .justify_center()
+                    .relative()
+                    .overflow_hidden()
                     .rounded_lg()
                     .border_1()
                     .border_dashed()
@@ -1110,27 +1460,35 @@ impl Builder {
                         cx.theme().muted.opacity(0.65)
                     })
                     .child(
-                        Icon::new(Lucide::Images)
-                            .with_size(px(28.))
-                            .text_color(cx.theme().muted_foreground),
+                        svg()
+                            .data(EMPTY_STATE_WATERMARK)
+                            .absolute()
+                            .right(px(-24.))
+                            .bottom(px(-22.))
+                            .w(px(210.))
+                            .h(px(164.))
+                            .text_color(warm_accent())
+                            .opacity(0.12),
                     )
                     .child(
                         div()
                             .text_align(TextAlign::Center)
                             .text_size(px(16.))
                             .font_medium()
-                            .child("Drop PNG frames into the window"),
+                            .mb(px(4.))
+                            .child(t(lang, "Drop PNG frames into the window", "将 PNG 图片拖拽到窗口中")),
                     )
                     .child(
                         div()
                             .text_align(TextAlign::Center)
                             .text_size(px(12.))
                             .text_color(cx.theme().muted_foreground)
-                            .child("List order is the animation playback order"),
+                            .mb(px(24.))
+                            .child(t(lang, "List order is the animation playback order", "列表顺序即动画播放顺序")),
                     )
                     .child(
                         Button::new("add-images")
-                            .label("Add Images")
+                            .label(t(lang, "Add Images", "添加图片"))
                             .primary()
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_file_picker(window, cx);
@@ -1140,6 +1498,7 @@ impl Builder {
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.language;
         v_flex()
             .w_full()
             .h_full()
@@ -1168,7 +1527,7 @@ impl Builder {
                         div()
                             .text_size(px(13.))
                             .font_medium()
-                            .child(format!("Frames ({})", self.frames.len())),
+                            .child(format!("{} ({})", t(lang, "Frames", "图片"), self.frames.len())),
                     )
                     .child(
                         div()
@@ -1201,8 +1560,13 @@ impl Builder {
                     .pb(px(64.))
                     .v_flex()
                     .gap_1()
-                    .on_hover(cx.listener(|this, hovering, _, cx| {
-                        if !hovering {
+                    .on_hover(cx.listener(|this, hovering, window, cx| {
+                        if *hovering {
+                            let index = this.last_preview_index.or(this.selected);
+                            if let Some(index) = index {
+                                this.request_preview(Some(index), window, cx);
+                            }
+                        } else {
                             this.close_preview(cx);
                         }
                     }))
@@ -1225,13 +1589,13 @@ impl Builder {
                     .justify_center()
                     .gap_2()
                     .child(
-                        pill_button("add-more", "Add Images", false, cx)
+                        pill_button("add-more", t(lang, "Add Images", "添加图片"), false, cx)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_file_picker(window, cx);
                             })),
                     )
                     .child(
-                        pill_button("export", "Export", true, cx)
+                        pill_button("export", t(lang, "Export", "导出"), true, cx)
                             .disabled(self.frames.is_empty())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_export_dialog(window, cx);
@@ -1247,6 +1611,7 @@ impl Builder {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let lang = self.language;
         let selected = self.selected == Some(index);
         let hovered = self.hovered_row == Some(index);
         let is_dragging = self.dragging == Some(index);
@@ -1306,6 +1671,7 @@ impl Builder {
                 });
                 cx.new(|_| DragPreview {
                     name: name.clone(),
+                    language: lang,
                 })
             })
             .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<usize>, _, cx| {
@@ -1400,12 +1766,21 @@ impl Builder {
                             .gap_1()
                             .items_center()
                             .overflow_x_hidden()
-                            .child(tag(format!("Format: PNG"), cx))
+                            .child(tag(t(lang, "Format: PNG", "格式：PNG"), cx))
                             .child(tag(
-                                format!("Pixels: {}×{}", frame.info.width, frame.info.height),
+                                match lang {
+                                    Language::Chinese => format!("像素：{}×{}", frame.info.width, frame.info.height),
+                                    Language::English => format!("Pixels: {}×{}", frame.info.width, frame.info.height),
+                                },
                                 cx,
                             ))
-                            .child(tag(format!("Size: {}", format_bytes(frame.size_bytes)), cx)),
+                            .child(tag(
+                                match lang {
+                                    Language::Chinese => format!("大小：{}", format_bytes(frame.size_bytes)),
+                                    Language::English => format!("Size: {}", format_bytes(frame.size_bytes)),
+                                },
+                                cx,
+                            )),
                     ),
             )
             .child(
@@ -1458,6 +1833,7 @@ impl Builder {
 
     #[allow(dead_code)]
     fn render_detail(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.language;
         let Some(index) = self.selected else {
             return div()
                 .flex_1()
@@ -1469,7 +1845,7 @@ impl Builder {
                     div()
                         .text_size(px(13.))
                         .text_color(cx.theme().muted_foreground)
-                        .child("Select a frame to view details"),
+                        .child(t(lang, "Select a frame to view details", "选择一张图片查看详情")),
                 )
                 .into_any_element();
         };
@@ -1478,54 +1854,55 @@ impl Builder {
         };
 
         let info = &frame.info;
+        let not_recorded = t(lang, "Not recorded", "未记录");
         let mut details = vec![
-            ("Name", frame.name.clone()),
-            ("Path", frame.path.display().to_string()),
+            (t(lang, "Name", "名称"), frame.name.clone()),
+            (t(lang, "Path", "路径"), frame.path.display().to_string()),
             (
-                "Size",
+                t(lang, "Size", "大小"),
                 format!("{} ({} bytes)", format_bytes(frame.size_bytes), frame.size_bytes),
             ),
             (
-                "Dimensions",
+                t(lang, "Dimensions", "尺寸"),
                 format!("{} × {} px", info.width, info.height),
             ),
-            ("Format", format!("PNG · bit depth {}", info.bit_depth)),
-            ("Color type", info.color_type_name().to_string()),
+            (t(lang, "Format", "格式"), format!("PNG · bit depth {}", info.bit_depth)),
+            (t(lang, "Color type", "颜色类型"), info.color_type_name().to_string()),
             (
-                "Compression",
+                t(lang, "Compression", "压缩"),
                 format!("deflate / filter {} / interlace {}", info.compression, info.filter),
             ),
-            ("Interlace", info.interlace_name().to_string()),
+            (t(lang, "Interlace", "隔行扫描"), info.interlace_name().to_string()),
             (
-                "DPI",
+                t(lang, "DPI", "DPI"),
                 match (info.dpi_x, info.dpi_y) {
                     (Some(x), Some(y)) => format!("{x:.1} × {y:.1}"),
-                    _ => "Not recorded".into(),
+                    _ => not_recorded.into(),
                 },
             ),
             (
-                "Gamma",
+                t(lang, "Gamma", "Gamma"),
                 info.gamma
                     .map(|value| format!("{value:.2}"))
-                    .unwrap_or_else(|| "Not recorded".into()),
+                    .unwrap_or_else(|| not_recorded.into()),
             ),
             (
-                "sRGB intent",
+                t(lang, "sRGB intent", "sRGB 意图"),
                 info.srgb_intent
                     .map(|value| value.to_string())
-                    .unwrap_or_else(|| "Not recorded".into()),
+                    .unwrap_or_else(|| not_recorded.into()),
             ),
             (
-                "Modified",
+                t(lang, "Modified", "修改时间"),
                 frame
                     .modified
-                    .and_then(format_system_time)
-                    .unwrap_or_else(|| "Not recorded".into()),
+                    .and_then(|time| format_time(lang, time))
+                    .unwrap_or_else(|| not_recorded.into()),
             ),
             (
-                "PNG chunks",
+                t(lang, "PNG chunks", "PNG 块"),
                 if info.chunks.is_empty() {
-                    "None".into()
+                    t(lang, "None", "无").into()
                 } else {
                     info.chunks.join(" · ")
                 },
@@ -1539,7 +1916,7 @@ impl Builder {
                 .map(|(key, value)| format!("{key}={value}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            details.push(("Text metadata", text));
+            details.push((t(lang, "Text metadata", "文本元数据"), text));
         }
         let split = (details.len() + 1) / 2;
         let left_details: Vec<_> = details[..split]
@@ -1577,7 +1954,11 @@ impl Builder {
                         div()
                             .text_size(px(12.))
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("Frame {} of {}", index + 1, self.frames.len())),
+                            .child(frame_position(
+                                lang,
+                                index + 1,
+                                self.frames.len(),
+                            )),
                     ),
             )
             .child(
@@ -1638,6 +2019,7 @@ impl Builder {
 
 struct DragPreview {
     name: String,
+    language: Language,
 }
 
 impl Render for DragPreview {
@@ -1652,7 +2034,10 @@ impl Render for DragPreview {
             .text_size(px(13.))
             .text_color(cx.theme().accent_foreground)
             .shadow_md()
-            .child(format!("Move {}", elide(&self.name, 24)))
+            .child(match self.language {
+                Language::Chinese => format!("移动 {}", elide(&self.name, 24)),
+                Language::English => format!("Move {}", elide(&self.name, 24)),
+            })
     }
 }
 
@@ -1660,6 +2045,7 @@ fn setting_field(
     label: &str,
     hint: &str,
     input: &Entity<InputState>,
+    disabled: bool,
     cx: &App,
 ) -> impl IntoElement {
     v_flex()
@@ -1667,16 +2053,16 @@ fn setting_field(
         .child(
             h_flex()
                 .w_full()
-                .gap_3()
+                .gap_2()
                 .items_center()
-                .justify_between()
                 .child(
                     div()
+                        .min_w(px(84.))
                         .text_size(px(13.))
                         .font_medium()
                         .child(label.to_string()),
                 )
-                .child(Input::new(input).w(px(150.))),
+                .child(Input::new(input).disabled(disabled).flex_1().min_w(px(0.))),
         )
         .child(
             div()
@@ -1686,57 +2072,58 @@ fn setting_field(
         )
 }
 
-fn preview_details(frame: &Frame, cx: &App) -> Vec<AnyElement> {
+fn preview_details(frame: &Frame, lang: Language, cx: &App) -> Vec<AnyElement> {
     let info = &frame.info;
+    let not_recorded = t(lang, "Not recorded", "未记录");
     let mut details = vec![
-        ("Name", frame.name.clone()),
-        ("Path", frame.path.display().to_string()),
+        (t(lang, "Name", "名称"), frame.name.clone()),
+        (t(lang, "Path", "路径"), frame.path.display().to_string()),
         (
-            "File size",
+            t(lang, "File size", "文件大小"),
             format!("{} ({} bytes)", format_bytes(frame.size_bytes), frame.size_bytes),
         ),
         (
-            "Dimensions",
+            t(lang, "Dimensions", "尺寸"),
             format!("{} × {} px", info.width, info.height),
         ),
-        ("Format", "PNG".into()),
-        ("Bit depth", info.bit_depth.to_string()),
-        ("Color type", info.color_type_name().to_string()),
+        (t(lang, "Format", "格式"), "PNG".into()),
+        (t(lang, "Bit depth", "位深"), info.bit_depth.to_string()),
+        (t(lang, "Color type", "颜色类型"), info.color_type_name().to_string()),
         (
-            "Compression",
+            t(lang, "Compression", "压缩"),
             format!("deflate, filter {}, interlace {}", info.compression, info.filter),
         ),
-        ("Interlace", info.interlace_name().to_string()),
+        (t(lang, "Interlace", "隔行扫描"), info.interlace_name().to_string()),
         (
-            "DPI",
+            t(lang, "DPI", "DPI"),
             match (info.dpi_x, info.dpi_y) {
                 (Some(x), Some(y)) => format!("{x:.1} × {y:.1}"),
-                _ => "Not recorded".into(),
+                _ => not_recorded.into(),
             },
         ),
         (
-            "Gamma",
+            t(lang, "Gamma", "Gamma"),
             info.gamma
                 .map(|value| format!("{value:.2}"))
-                .unwrap_or_else(|| "Not recorded".into()),
+                .unwrap_or_else(|| not_recorded.into()),
         ),
         (
-            "sRGB intent",
+            t(lang, "sRGB intent", "sRGB 意图"),
             info.srgb_intent
                 .map(|value| value.to_string())
-                .unwrap_or_else(|| "Not recorded".into()),
+                .unwrap_or_else(|| not_recorded.into()),
         ),
         (
-            "Modified",
+            t(lang, "Modified", "修改时间"),
             frame
                 .modified
-                .and_then(format_system_time)
-                .unwrap_or_else(|| "Not recorded".into()),
+                .and_then(|time| format_time(lang, time))
+                .unwrap_or_else(|| not_recorded.into()),
         ),
         (
-            "PNG chunks",
+            t(lang, "PNG chunks", "PNG 块"),
             if info.chunks.is_empty() {
-                "None".into()
+                t(lang, "None", "无").into()
             } else {
                 info.chunks.join(" · ")
             },
@@ -1744,7 +2131,7 @@ fn preview_details(frame: &Frame, cx: &App) -> Vec<AnyElement> {
     ];
     if !info.text_entries.is_empty() {
         details.push((
-            "Text metadata",
+            t(lang, "Text metadata", "文本元数据"),
             info.text_entries
                 .iter()
                 .take(8)
@@ -1761,6 +2148,152 @@ fn preview_details(frame: &Frame, cx: &App) -> Vec<AnyElement> {
 
 fn selected_row_bg() -> gpui_kit::Hsla {
     gpui_kit::hsla(0.07, 0.82, 0.55, 0.24)
+}
+
+fn t(lang: Language, en: &'static str, zh: &'static str) -> &'static str {
+    match lang {
+        Language::Chinese => zh,
+        Language::English => en,
+    }
+}
+
+fn added_frames_notice(lang: Language, count: usize) -> String {
+    match lang {
+        Language::Chinese => format!("已添加 {count} 张 PNG 图片"),
+        Language::English => format!("Added {count} PNG frames"),
+    }
+}
+
+fn skipped_frames_notice(lang: Language, count: usize) -> String {
+    match lang {
+        Language::Chinese => format!("已跳过 {count} 个非 PNG 或无法读取的文件"),
+        Language::English => format!("Skipped {count} non-PNG or unreadable files"),
+    }
+}
+
+fn picker_error(lang: Language, error: impl std::fmt::Display) -> String {
+    match lang {
+        Language::Chinese => format!("打开图片选择器失败：{error}"),
+        Language::English => format!("Failed to open file picker: {error}"),
+    }
+}
+
+fn save_path_error(lang: Language, error: impl std::fmt::Display) -> String {
+    match lang {
+        Language::Chinese => format!("选择保存位置失败：{error}"),
+        Language::English => format!("Failed to choose save path: {error}"),
+    }
+}
+
+fn delete_notice(lang: Language, name: &str) -> String {
+    match lang {
+        Language::Chinese => format!("“{name}” 将从序列帧列表中移除。"),
+        Language::English => format!("“{name}” will be removed from the frame list."),
+    }
+}
+
+fn export_output_notice(lang: Language, dimensions: &str, count: usize) -> String {
+    match lang {
+        Language::Chinese => format!("输出：{dimensions} · {count} 帧"),
+        Language::English => format!("Output: {dimensions} · {count} frames"),
+    }
+}
+
+fn frame_position(lang: Language, index: usize, total: usize) -> String {
+    match lang {
+        Language::Chinese => format!("第 {index} 帧，共 {total} 帧"),
+        Language::English => format!("Frame {index} of {total}"),
+    }
+}
+
+fn format_time(lang: Language, time: SystemTime) -> Option<String> {
+    time.duration_since(UNIX_EPOCH).ok().map(|duration| {
+        match lang {
+            Language::Chinese => format!("{}（Unix 秒）", duration.as_secs()),
+            Language::English => format!("{} (Unix seconds)", duration.as_secs()),
+        }
+    })
+}
+
+fn localize_error(lang: Language, error: &str) -> String {
+    if lang == Language::Chinese {
+        return error.to_string();
+    }
+    let replacements = [
+        ("当前应用暂不支持当前系统。", "This app does not support the current system."),
+        ("请先添加序列帧图片。", "Add PNG frames first."),
+        ("帧间隔必须大于 0 ms。", "Frame interval must be greater than 0 ms."),
+        ("创建临时目录失败", "Failed to create temp directory"),
+        ("复制 ", "Failed to copy "),
+        (" 失败", ""),
+        ("启动 ffmpeg 失败", "Failed to start ffmpeg"),
+        ("ffmpeg 导出失败", "ffmpeg export failed"),
+    ];
+    let mut text = error.to_string();
+    for (from, to) in replacements {
+        text = text.replace(from, to);
+    }
+    text
+}
+
+fn suggested_export_filename(
+    stem: &str,
+    interval_input: &Entity<InputState>,
+    quality_input: &Entity<InputState>,
+    cx: &App,
+) -> String {
+    let interval = interval_input
+        .read(cx)
+        .value()
+        .trim()
+        .parse::<u16>()
+        .unwrap_or(10);
+    let quality = quality_input
+        .read(cx)
+        .value()
+        .trim()
+        .parse::<u8>()
+        .unwrap_or(80);
+    format!("{stem}-{interval}-{quality}.png")
+}
+
+fn friendly_export_error(lang: Language, error: &str) -> String {
+    let lower = error.to_ascii_lowercase();
+    let reason = if error.contains("导出超时") {
+        Some((
+            "Export timed out and was stopped. Please retry, or use fewer frames.",
+            "导出超时，已停止。请重试，或减少帧数后重试。",
+        ))
+    } else if lower.contains("cannot write more than one file")
+        || lower.contains("sequence pattern")
+    {
+        Some((
+            "The file name is not valid for an animated PNG.",
+            "文件名不适用于动态 PNG，请调整后重试。",
+        ))
+    } else if lower.contains("permission denied") {
+        Some((
+            "No permission to write to the selected location.",
+            "没有权限写入所选位置，请更换保存位置。",
+        ))
+    } else if lower.contains("no space left") {
+        Some((
+            "There is not enough disk space to export the animation.",
+            "磁盘空间不足，无法完成导出。",
+        ))
+    } else if lower.contains("unknown encoder") || lower.contains("encoder not found") {
+        Some((
+            "This ffmpeg build cannot encode APNG.",
+            "当前 ffmpeg 不支持导出 APNG，请安装完整版本。",
+        ))
+    } else {
+        None
+    };
+
+    if let Some((en, zh)) = reason {
+        return t(lang, en, zh).to_string();
+    }
+    t(lang, "Export failed. Please try again.", "导出失败，请重试。").to_string()
 }
 
 fn hover_row_bg() -> gpui_kit::Hsla {
@@ -1795,6 +2328,33 @@ fn pill_button(id: &'static str, label: &'static str, primary: bool, cx: &App) -
         .px(px(18.))
         .shadow_md();
     if primary {
+        button.primary()
+    } else {
+        button
+            .ghost()
+            .bg(cx.theme().background.opacity(0.72))
+            .border_1()
+            .border_color(cx.theme().border.opacity(0.9))
+    }
+}
+
+fn language_button<F>(
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    cx: &App,
+    on_click: F,
+) -> Button
+where
+    F: Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+{
+    let button = Button::new(id)
+        .label(label)
+        .rounded_full()
+        .h(px(32.))
+        .px(px(16.))
+        .on_click(on_click);
+    if selected {
         button.primary()
     } else {
         button

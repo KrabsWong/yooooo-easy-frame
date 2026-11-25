@@ -2,13 +2,22 @@ mod app;
 mod export;
 mod frame;
 mod png;
+mod settings;
+mod updater;
 
 use gpui_kit::*;
 use std::time::Duration;
 
 actions!(
     easy_frame_actions,
-    [QuitApp, MinimizeApp, CloseWindow, ZoomApp, ToggleFullscreenApp]
+    [
+        QuitApp,
+        MinimizeApp,
+        CloseWindow,
+        ZoomApp,
+        ToggleFullscreenApp,
+        CheckUpdates
+    ]
 );
 
 fn main() {
@@ -17,6 +26,7 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx| {
             gpui_kit::init(cx);
+            updater::start();
 
             cx.bind_keys([
                 KeyBinding::new("cmd-q", QuitApp, None),
@@ -72,10 +82,15 @@ fn main() {
                     let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
                 }
             });
+            cx.on_action(|_: &CheckUpdates, _| updater::check());
 
             cx.set_menus([
                 Menu::new("Easy Frame")
-                    .items([MenuItem::action("Quit Easy Frame", QuitApp)]),
+                    .items([
+                        MenuItem::action("Check for Updates", CheckUpdates),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit Easy Frame", QuitApp),
+                    ]),
                 Menu::new("File")
                     .items([MenuItem::action("Close Window", CloseWindow)]),
                 Menu::new("Window").items([

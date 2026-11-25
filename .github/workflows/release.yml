@@ -1,0 +1,152 @@
+name: Release macOS app
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Version increment (major, minor, or patch)"
+        required: true
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+  push:
+    tags: ['release/patch/*', 'release/minor/*', 'release/major/*']
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notes-pr:
+    concurrency:
+      group: release-preparation
+      cancel-in-progress: false
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+      statuses: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require main for manual releases
+        if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v5
+        with:
+          # Request tags run trusted main scripts; their target is validated below.
+          ref: ${{ startsWith(github.ref, 'refs/tags/release/') && 'main' || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install pinned OpenCode CLI
+        continue-on-error: true
+        timeout-minutes: 3
+        run: npm install --global opencode-ai@1.19.5
+      - name: Generate notes and open review PR
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_LEVEL: ${{ inputs.level }}
+          GH_TOKEN: ${{ github.token }}
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            python3 scripts/start_version_release.py --level "$RELEASE_LEVEL"
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [[ "$RELEASE_TAG" == release/* ]]; then
+            python3 scripts/start_version_release.py --request-tag "$RELEASE_TAG"
+          else
+            echo "Use a release/patch, release/minor, or release/major request tag." >&2
+            exit 1
+          fi
+
+  approved-notes:
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release-notes/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      tag: ${{ steps.approved.outputs.tag }}
+      commit: ${{ steps.approved.outputs.commit }}
+      previous: ${{ steps.approved.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify approval and export merged notes
+        id: approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python3 scripts/release_notes_pr.py export --pr "$PR_NUMBER" --output "$RUNNER_TEMP/release-summary/summary.md"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-summary
+          path: ${{ runner.temp }}/release-summary/summary.md
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    # Unrelated closed PRs must not occupy or cancel a pending publication.
+    concurrency:
+      group: macos-release
+      cancel-in-progress: false
+    needs: approved-notes
+    permissions:
+      contents: write
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+      RELEASE_TAG: ${{ needs.approved-notes.outputs.tag }}
+      RELEASE_PREVIOUS_TAG: ${{ needs.approved-notes.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.approved-notes.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Configure release summary path
+        run: echo "RELEASE_SUMMARY_FILE=$RUNNER_TEMP/release-summary/summary.md" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-summary
+          path: ${{ runner.temp }}/release-summary
+      - name: Prepare toolchain and validate architecture
+        run: |
+          test "$(uname -m)" = arm64
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Validate main ancestry and synchronize version from tag
+        run: python3 scripts/prepare_release.py --tag "$RELEASE_TAG"
+      - name: Test
+        run: |
+          cargo test --locked
+          env -u RELEASE_SUMMARY_FILE -u RELEASE_PREVIOUS_TAG python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Validate user-facing release summary
+        run: python3 -c 'import os, sys; sys.path.insert(0, "scripts"); from release import load_release_summary; load_release_summary(os.environ["RELEASE_TAG"])'
+      - name: Package ad-hoc signed app
+        run: bash scripts/package.sh
+      - name: Verify production updater preferences
+        run: python3 scripts/test-updater.py --sdk build/sparkle/sdk
+      - name: Sign update archive and appcast
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: python3 scripts/release.py --tag "$RELEASE_TAG"
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py --tag "$RELEASE_TAG" --publish

@@ -10,6 +10,8 @@ Easy Frame is a native macOS app for turning PNG sequences into animated APNG im
 - Preview any frame in a detached side window with full PNG metadata.
 - Navigate frames with the keyboard arrow keys.
 - Adjust playback interval and output quality before export.
-- Export ordered PNG sequences to APNG with ffmpeg.
-- Check the local ffmpeg installation at startup.
+- Export ordered PNG sequences to APNG with a bundled LGPL FFmpeg build.
+- Validate the bundled encoder at startup without requiring a system installation.
 - Follow the system light and dark appearance automatically.
+- Switch the interface between Chinese and English in Settings; Chinese is the default.
+- Check for signed Sparkle updates and install them through macOS release assets.

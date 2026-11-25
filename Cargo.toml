@@ -7,5 +7,8 @@ edition = "2024"
 name = "apng-builder"
 path = "src/main.rs"
 
+[features]
+sparkle = []
+
 [dependencies]
 gpui-kit = "=0.11.0"
