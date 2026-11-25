@@ -7,10 +7,8 @@ mod native {
     unsafe extern "C" {
         pub fn easy_frame_updater_start() -> bool;
         pub fn easy_frame_updater_version() -> *const c_char;
-        pub fn easy_frame_updater_available() -> bool;
         pub fn easy_frame_updater_can_check() -> bool;
         pub fn easy_frame_updater_check();
-        pub fn easy_frame_updater_automatic() -> bool;
         pub fn easy_frame_updater_set_automatic(enabled: bool);
     }
 }
@@ -21,17 +19,6 @@ pub fn start() {
         unsafe {
             let _ = native::easy_frame_updater_start();
         }
-    }
-}
-
-pub fn available() -> bool {
-    #[cfg(feature = "sparkle")]
-    {
-        unsafe { native::easy_frame_updater_available() }
-    }
-    #[cfg(not(feature = "sparkle"))]
-    {
-        false
     }
 }
 
@@ -51,17 +38,6 @@ pub fn check() {
     #[cfg(feature = "sparkle")]
     {
         unsafe { native::easy_frame_updater_check() };
-    }
-}
-
-pub fn automatic() -> bool {
-    #[cfg(feature = "sparkle")]
-    {
-        unsafe { native::easy_frame_updater_automatic() }
-    }
-    #[cfg(not(feature = "sparkle"))]
-    {
-        false
     }
 }
 

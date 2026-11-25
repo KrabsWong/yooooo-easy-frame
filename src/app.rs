@@ -11,11 +11,11 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
         button::{Button, ButtonVariants as _},
+        checkbox::Checkbox,
         input::{Input, InputEvent, InputState},
         notification::Notification,
         select::{SearchableVec, Select, SelectEvent, SelectState},
         spinner::Spinner,
-        tab::{Tab, TabBar},
         theme::Theme,
     },
     base::IndexPath,
@@ -26,12 +26,14 @@ use std::{
     cell::Cell,
     path::{Path as StdPath, PathBuf},
     rc::Rc,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 actions!(apng_builder, [SelectPreviousFrame, SelectNextFrame]);
 
-const EMPTY_STATE_WATERMARK: &[u8] = include_bytes!("../resources/easy-frame-watermark.svg");
+const APP_BACKGROUND: &[u8] = include_bytes!("../resources/easy-frame-logo.png");
+const EMPTY_STATE_BORDER: &[u8] = include_bytes!("../resources/empty-state-border.svg");
 
 enum BootState {
     Checking,
@@ -49,12 +51,6 @@ enum DropPosition {
 enum MoveDirection {
     Up,
     Down,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsTab {
-    General,
-    About,
 }
 
 impl DropPosition {
@@ -76,13 +72,14 @@ pub struct Builder {
     recent_move: Option<(usize, MoveDirection, u64)>,
     move_seq: u64,
     file_over: bool,
+    background_image: Arc<gpui_kit::Image>,
     exporting: Rc<Cell<bool>>,
     export_dialog_open: bool,
     interval_input: Option<Entity<InputState>>,
     quality_input: Option<Entity<InputState>>,
     filename_input: Option<Entity<InputState>>,
     export_subscriptions: Vec<Subscription>,
-    settings_subscription: Option<Subscription>,
+    _settings_window_close_subscription: Option<Subscription>,
     _appearance_subscription: Option<Subscription>,
     _quit_subscription: Option<Subscription>,
     _visibility_subscription: Option<Subscription>,
@@ -90,6 +87,7 @@ pub struct Builder {
     scroll_handle: ScrollHandle,
     preview_state: Entity<PreviewState>,
     preview_window: Option<AnyWindowHandle>,
+    settings_window: Option<AnyWindowHandle>,
     preview_request: Option<usize>,
     last_preview_index: Option<usize>,
     preview_seq: u64,
@@ -105,6 +103,201 @@ pub struct PreviewWindow {
     state: Entity<PreviewState>,
     _state_subscription: Subscription,
     language: Language,
+}
+
+pub struct SettingsWindow {
+    automatic: bool,
+    language: Language,
+    ffmpeg_version: Option<String>,
+    language_select: Entity<SelectState<SearchableVec<String>>>,
+    _language_subscription: Subscription,
+    _appearance_subscription: Subscription,
+}
+
+impl SettingsWindow {
+    fn new(
+        main: WeakEntity<Builder>,
+        settings: Settings,
+        ffmpeg_version: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        sync_theme(Some(window), cx);
+        let appearance_subscription = window.observe_window_appearance(|window, cx| {
+            sync_theme(Some(window), cx);
+        });
+
+        let language = settings.language;
+        let language_options =
+            SearchableVec::new(vec!["中文".to_string(), "English".to_string()]);
+        let language_select = cx.new(|cx| {
+            SelectState::new(
+                language_options,
+                Some(IndexPath::new(match language {
+                    Language::Chinese => 0,
+                    Language::English => 1,
+                })),
+                window,
+                cx,
+            )
+        });
+        let language_subscription = cx.subscribe(
+            &language_select,
+            move |this, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else {
+                    return;
+                };
+                let language = match value.as_str() {
+                    "中文" => Language::Chinese,
+                    _ => Language::English,
+                };
+                if this.language == language {
+                    return;
+                }
+                this.language = language;
+                let mut settings = Settings::load();
+                settings.language = language;
+                settings.save();
+                let _ = main.update(cx, |builder, cx| {
+                    builder.language = language;
+                    cx.notify();
+                });
+                cx.notify();
+            },
+        );
+
+        Self {
+            automatic: settings.automatic_updates,
+            language,
+            ffmpeg_version,
+            language_select,
+            _language_subscription: language_subscription,
+            _appearance_subscription: appearance_subscription,
+        }
+    }
+}
+
+impl Render for SettingsWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lang = self.language;
+        window.set_window_title(t(lang, "Easy Frame Settings", "Easy Frame 设置"));
+        let automatic = self.automatic;
+        let update_available = updater::version();
+        let app_version = env!("CARGO_PKG_VERSION").to_string();
+
+        div()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .p_4()
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_5()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t(lang, "General", "常规")),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_4()
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .font_medium()
+                                            .child(t(lang, "Language", "界面语言")),
+                                    )
+                                    .child(
+                                        Select::new(&self.language_select)
+                                            .w(px(150.))
+                                            .accessibility_label(t(
+                                                lang,
+                                                "Interface language",
+                                                "界面语言",
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .w_full()
+                                    .child(
+                                        Checkbox::new("automatic-updates")
+                                            .label(t(
+                                                lang,
+                                                "Automatically check for updates",
+                                                "自动检查更新",
+                                            ))
+                                            .checked(automatic)
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(t(
+                                                        lang,
+                                                        "Checks every 12 hours.",
+                                                        "每 12 小时检查一次。",
+                                                    )),
+                                            )
+                                            .on_click(cx.listener(
+                                                |this, enabled: &bool, _, cx| {
+                                                    updater::set_automatic(*enabled);
+                                                    let mut settings = Settings::load();
+                                                    settings.automatic_updates = *enabled;
+                                                    settings.save();
+                                                    this.automatic = *enabled;
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .when_some(update_available, |this, version| {
+                                        this.child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(warm_accent())
+                                                .child(format!(
+                                                    "{}: {}",
+                                                    t(lang, "Update available", "有可用更新"),
+                                                    version
+                                                )),
+                                        )
+                                    }),
+                            )
+                    )
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(t(lang, "About", "关于")),
+                                    )
+                            .child(compact_detail_row(
+                                t(lang, "Version", "版本"),
+                                app_version,
+                                cx,
+                            ))
+                            .child(compact_detail_row(
+                                t(lang, "Bundled FFmpeg", "内置 FFmpeg"),
+                                self.ffmpeg_version.clone().unwrap_or_else(|| {
+                                    t(lang, "Not detected", "未检测到").to_string()
+                                }),
+                                cx,
+                            )),
+                    )
+            )
+    }
 }
 
 impl Render for PreviewWindow {
@@ -165,13 +358,17 @@ impl Builder {
             recent_move: None,
             move_seq: 0,
             file_over: false,
+            background_image: Arc::new(gpui_kit::Image::from_bytes(
+                gpui_kit::ImageFormat::Png,
+                APP_BACKGROUND.to_vec(),
+            )),
             exporting: Rc::new(Cell::new(false)),
             export_dialog_open: false,
             interval_input: None,
             quality_input: None,
             filename_input: None,
             export_subscriptions: Vec::new(),
-            settings_subscription: None,
+            _settings_window_close_subscription: None,
             _appearance_subscription: Some(appearance_subscription),
             _quit_subscription: None,
             _visibility_subscription: None,
@@ -179,6 +376,7 @@ impl Builder {
             scroll_handle: ScrollHandle::new(),
             preview_state,
             preview_window: None,
+            settings_window: None,
             preview_request: None,
             last_preview_index: None,
             preview_seq: 0,
@@ -240,6 +438,7 @@ impl Builder {
         cx.observe_window_visibility(window, |this, visibility, _, cx| {
             if !visibility.is_visible() {
                 this.close_preview(cx);
+                this.close_settings(cx);
             }
         })
     }
@@ -430,6 +629,12 @@ impl Builder {
         self.preview_seq = self.preview_seq.wrapping_add(1);
         self.preview_request = None;
         if let Some(handle) = self.preview_window.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window.take() {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
     }
@@ -1022,209 +1227,62 @@ impl Builder {
         });
     }
 
-    fn open_settings_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let lang = self.language;
-        let language_options = SearchableVec::new(vec![
-            "中文".to_string(),
-            "English".to_string(),
-        ]);
-        let language_select = cx.new(|cx| {
-            SelectState::new(
-                language_options,
-                Some(IndexPath::new(match lang {
-                    Language::Chinese => 0,
-                    Language::English => 1,
-                })),
-                window,
+    fn open_settings_window(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = self.settings_window {
+            if handle
+                .update(cx, |_, window, _| {
+                    window.activate_window();
+                })
+                .is_ok()
+            {
+                return;
+            }
+            self.settings_window = None;
+        }
+
+        let main = cx.weak_entity();
+        let language = self.language;
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::centered(
+                None,
+                size(px(420.), px(270.)),
                 cx,
-            )
-        });
-        let language_subscription = cx.subscribe(
-            &language_select,
-            move |this, _, event: &SelectEvent<SearchableVec<String>>, cx| {
-                let SelectEvent::Confirm(Some(value)) = event else {
-                    return;
-                };
-                let language = match value.as_str() {
-                    "中文" => Language::Chinese,
-                    _ => Language::English,
-                };
-                if this.language != language {
-                    this.language = language;
-                    Settings { language }.save();
-                    cx.notify();
-                }
-            },
-        );
-        self.settings_subscription = Some(language_subscription);
-        let app_version = env!("CARGO_PKG_VERSION").to_string();
-        let update_available = updater::version();
-        let automatic = updater::automatic();
-        let updater_ready = updater::available();
+            )),
+            window_min_size: Some(size(px(380.), px(240.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some(t(language, "Easy Frame Settings", "Easy Frame 设置").into()),
+                appears_transparent: false,
+                traffic_light_position: None,
+            }),
+            is_resizable: false,
+            ..Default::default()
+        };
         let ffmpeg_version = match &self.boot {
             BootState::Ready(environment) => Some(environment.version.clone()),
             _ => None,
         };
-        let tab = Rc::new(Cell::new(SettingsTab::General));
-
-        window.open_dialog(cx, move |dialog, _, cx| {
-            dialog
-                .title(t(lang, "Settings", "设置"))
-                .margin_top(px(100.))
-                .width(px(420.))
-                .child(
-                    v_flex()
-                        .gap_4()
-                        .child(
-                            TabBar::new("settings-tabs")
-                                .underline()
-                                .selected_index(match tab.get() {
-                                    SettingsTab::General => 0,
-                                    SettingsTab::About => 1,
-                                })
-                                .child(Tab::new().label(t(lang, "General", "常规")))
-                                .child(Tab::new().label(t(lang, "About", "关于")))
-                                .on_click({
-                                    let tab = tab.clone();
-                                    move |index, window, _| {
-                                        tab.set(if *index == 0 {
-                                            SettingsTab::General
-                                        } else {
-                                            SettingsTab::About
-                                        });
-                                        window.refresh();
-                                    }
-                                }),
-                        )
-                        .when(tab.get() == SettingsTab::General, |this| {
-                            this.child(
-                                v_flex()
-                                    .gap_4()
-                                    .child(
-                                        v_flex()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.))
-                                                    .font_medium()
-                                                    .child(t(lang, "Language", "界面语言")),
-                                            )
-                                            .child(
-                                                Select::new(&language_select)
-                                                    .w(px(180.))
-                                                    .accessibility_label(t(
-                                                        lang,
-                                                        "Interface language",
-                                                        "界面语言",
-                                                    )),
-                                            ),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_size(px(13.))
-                                                    .font_medium()
-                                                    .child(t(lang, "Updates", "更新")),
-                                            )
-                                            .when(!updater_ready, |this| {
-                                                this.child(
-                                                    div()
-                                                        .text_size(px(12.))
-                                                        .child(t(
-                                                            lang,
-                                                            "Updates are available in release builds.",
-                                                            "更新功能仅在正式构建中可用。",
-                                                        )),
-                                                )
-                                            })
-                                            .when_some(update_available.clone(), |this, version| {
-                                                this.child(
-                                                    div()
-                                                        .text_size(px(12.))
-                                                        .text_color(warm_accent())
-                                                        .child(format!(
-                                                            "{}: {}",
-                                                            t(lang, "Update available", "有可用更新"),
-                                                            version
-                                                        )),
-                                                )
-                                            })
-                                            .child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .child(
-                                                        Button::new("check-updates")
-                                                            .label(t(lang, "Check for Updates", "检查更新"))
-                                                            .disabled(!updater_ready)
-                                                            .on_click(|_, _, _| updater::check()),
-                                                    )
-                                                    .child(
-                                                        Button::new("automatic-updates")
-                                                            .label(t(
-                                                                lang,
-                                                                if automatic { "Automatic checks: On" } else { "Automatic checks: Off" },
-                                                                if automatic { "自动检查：开" } else { "自动检查：关" },
-                                                            ))
-                                                            .disabled(!updater_ready)
-                                                            .on_click(move |_, window, cx| {
-                                                                updater::set_automatic(!automatic);
-                                                                window.close_dialog(cx);
-                                                            }),
-                                                    ),
-                                            ),
-                                    ),
-                            )
-                        })
-                        .when(tab.get() == SettingsTab::About, |this| {
-                            let components = [
-                                "GPUI / gpui-kit 0.11.0",
-                                "Sparkle 2.9.3",
-                                "FFmpeg 7.1.1 (LGPL 2.1+)",
-                            ];
-                            this.child(
-                                v_flex()
-                                    .gap_2()
-                                    .child(
-                                        compact_detail_row(
-                                            t(lang, "Version", "版本"),
-                                            app_version.clone(),
-                                            cx,
-                                        )
-                                    )
-                                    .child(
-                                        compact_detail_row(
-                                            t(lang, "Dependency", "依赖"),
-                                            format!(
-                                                "{} ffmpeg {}",
-                                                t(lang, "Bundled", "内置"),
-                                                ffmpeg_version.clone().unwrap_or_else(|| {
-                                                    t(lang, "Not detected", "未检测到").to_string()
-                                                })
-                                            ),
-                                            cx,
-                                        )
-                                    )
-                                    .child(
-                                        div()
-                                            .mt_1()
-                                            .text_size(px(13.))
-                                            .font_medium()
-                                            .child(t(lang, "Open-source components", "开源组件")),
-                                    )
-                                    .children(components.into_iter().map(|component| {
-                                        div()
-                                            .text_size(px(12.))
-                                            .line_height(px(18.))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("• {component}"))
-                                    })),
-                            )
-                        }),
-                )
-        });
+        let settings = Settings {
+            language,
+            ..Settings::load()
+        };
+        let (handle, _) = gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| {
+                    SettingsWindow::new(main.clone(), settings, ffmpeg_version, window, cx)
+                })
+            })
+            .expect("failed to open settings window");
+        let window_id = handle.window_id();
+        self.settings_window = Some(handle.into());
+        self._settings_window_close_subscription = Some(cx.on_window_closed(move |cx, closed| {
+            if closed != window_id {
+                return;
+            }
+            let _ = main.update(cx, |builder, _| {
+                builder.settings_window = None;
+            });
+        }));
     }
+
 }
 
 impl Render for Builder {
@@ -1249,6 +1307,14 @@ impl Render for Builder {
             .relative()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .child(
+                img(self.background_image.clone())
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .object_fit(ObjectFit::Contain)
+                    .opacity(0.08),
+            )
             .on_action(cx.listener(|this, _: &crate::CloseWindow, window, cx| {
                 this.close_preview(cx);
                 window.minimize_window();
@@ -1331,11 +1397,6 @@ impl Builder {
                     .gap_2()
                     .items_center()
                     .child(
-                        Icon::new(Lucide::Image)
-                            .with_size(px(17.))
-                            .text_color(cx.theme().foreground),
-                    )
-                    .child(
                         div()
                             .text_size(px(14.))
                             .font_medium()
@@ -1352,7 +1413,7 @@ impl Builder {
                     .justify_center()
                     .rounded_md()
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_settings_dialog(window, cx);
+                        this.open_settings_window(window, cx);
                     }))
                     .child(
                         Icon::new(Lucide::Settings)
@@ -1451,13 +1512,6 @@ impl Builder {
                     .relative()
                     .overflow_hidden()
                     .rounded_lg()
-                    .border_1()
-                    .border_dashed()
-                    .border_color(if self.file_over {
-                        warm_accent()
-                    } else {
-                        cx.theme().border
-                    })
                     .bg(if self.file_over {
                         cx.theme().drop_target.opacity(0.45)
                     } else {
@@ -1465,14 +1519,16 @@ impl Builder {
                     })
                     .child(
                         svg()
-                            .data(EMPTY_STATE_WATERMARK)
+                            .data(EMPTY_STATE_BORDER)
                             .absolute()
-                            .right(px(-24.))
-                            .bottom(px(-22.))
-                            .w(px(210.))
-                            .h(px(164.))
-                            .text_color(warm_accent())
-                            .opacity(0.12),
+                            .inset_0()
+                            .w_full()
+                            .h_full()
+                            .text_color(if self.file_over {
+                                warm_accent()
+                            } else {
+                                cx.theme().border
+                            }),
                     )
                     .child(
                         div()

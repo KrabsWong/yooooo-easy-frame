@@ -7,6 +7,7 @@ mod settings;
 mod updater;
 
 use gpui_kit::*;
+use settings::Settings;
 use std::time::Duration;
 
 actions!(
@@ -28,6 +29,7 @@ fn main() {
         .run(|cx| {
             gpui_kit::init(cx);
             updater::start();
+            updater::set_automatic(Settings::load().automatic_updates);
 
             cx.bind_keys([
                 KeyBinding::new("cmd-q", QuitApp, None),
