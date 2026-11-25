@@ -1,9 +1,12 @@
 name: Build macOS app
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    tags:
+      - 'release/patch/*'
+      - 'release/minor/*'
+      - 'release/major/*'
+      - 'v*.*.*'
 
 permissions:
   contents: read
