@@ -14,13 +14,11 @@ use gpui_kit::{
         input::{Input, InputEvent, InputState},
         notification::Notification,
         scroll::ScrollableElement as _,
-        select::{SearchableVec, Select, SelectEvent, SelectState},
         spinner::Spinner,
         switch::Switch,
         tab::{Tab, TabBar},
         theme::Theme,
     },
-    base::IndexPath,
     prelude::*,
     *,
 };
@@ -115,12 +113,11 @@ pub struct PreviewWindow {
 }
 
 pub struct SettingsWindow {
+    main: WeakEntity<Builder>,
     automatic: bool,
     language: Language,
     tab: SettingsTab,
     ffmpeg_version: Option<String>,
-    language_select: Entity<SelectState<SearchableVec<String>>>,
-    _language_subscription: Subscription,
     _appearance_subscription: Subscription,
 }
 
@@ -138,53 +135,30 @@ impl SettingsWindow {
         });
 
         let language = settings.language;
-        let language_options =
-            SearchableVec::new(vec!["中文".to_string(), "English".to_string()]);
-        let language_select = cx.new(|cx| {
-            SelectState::new(
-                language_options,
-                Some(IndexPath::new(match language {
-                    Language::Chinese => 0,
-                    Language::English => 1,
-                })),
-                window,
-                cx,
-            )
-        });
-        let language_subscription = cx.subscribe(
-            &language_select,
-            move |this, _, event: &SelectEvent<SearchableVec<String>>, cx| {
-                let SelectEvent::Confirm(Some(value)) = event else {
-                    return;
-                };
-                let language = match value.as_str() {
-                    "中文" => Language::Chinese,
-                    _ => Language::English,
-                };
-                if this.language == language {
-                    return;
-                }
-                this.language = language;
-                let mut settings = Settings::load();
-                settings.language = language;
-                settings.save();
-                let _ = main.update(cx, |builder, cx| {
-                    builder.language = language;
-                    cx.notify();
-                });
-                cx.notify();
-            },
-        );
 
         Self {
+            main,
             automatic: settings.automatic_updates,
             language,
             tab: SettingsTab::General,
             ffmpeg_version,
-            language_select,
-            _language_subscription: language_subscription,
             _appearance_subscription: appearance_subscription,
         }
+    }
+
+    fn select_language(&mut self, language: Language, cx: &mut Context<Self>) {
+        if self.language == language {
+            return;
+        }
+        self.language = language;
+        let mut settings = Settings::load();
+        settings.language = language;
+        settings.save();
+        let _ = self.main.update(cx, |builder, cx| {
+            builder.language = language;
+            cx.notify();
+        });
+        cx.notify();
     }
 }
 
@@ -233,7 +207,7 @@ impl Render for SettingsWindow {
                             .child(
                                 v_flex()
                                     .w_full()
-                                    .gap_6()
+                                    .gap_4()
                                     .when(self.tab == SettingsTab::General, |this| {
                                         this.child(
                                             h_flex()
@@ -248,13 +222,29 @@ impl Render for SettingsWindow {
                                                         .child(t(lang, "Language", "界面语言")),
                                                 )
                                                 .child(
-                                                    Select::new(&self.language_select)
-                                                        .w(px(150.))
-                                                        .accessibility_label(t(
-                                                            lang,
-                                                            "Interface language",
-                                                            "界面语言",
-                                                        )),
+                                                    h_flex()
+                                                        .gap_0()
+                                                        .rounded_md()
+                                                        .bg(cx.theme().muted)
+                                                        .p(px(4.))
+                                                        .child(
+                                                            language_option(
+                                                                "language-chinese",
+                                                                "中文",
+                                                                Language::Chinese,
+                                                                lang,
+                                                                cx,
+                                                            ),
+                                                        )
+                                                        .child(
+                                                            language_option(
+                                                                "language-english",
+                                                                "English",
+                                                                Language::English,
+                                                                lang,
+                                                                cx,
+                                                            ),
+                                                        ),
                                                 ),
                                         )
                                         .child(
@@ -327,7 +317,8 @@ impl Render for SettingsWindow {
                                                     svg()
                                                         .data(APP_LOGO)
                                                         .w(px(88.))
-                                                        .h(px(88.)),
+                                                        .h(px(88.))
+                                                        .text_color(cx.theme().foreground),
                                                 )
                                                 .child(
                                                     div()
@@ -339,8 +330,8 @@ impl Render for SettingsWindow {
                                         .child(
                                             v_flex()
                                                 .w_full()
-                                                .gap_2()
-                                                .mt_3()
+                                                .gap_1()
+                                                .mt_2()
                                                 .child(
                                                     div()
                                                         .text_size(px(13.))
@@ -351,17 +342,17 @@ impl Render for SettingsWindow {
                                                             "依赖资源",
                                                         )),
                                                 )
-                                                .child(compact_detail_row(
+                                                .child(dependency_row(
                                                     "GPUI / gpui-kit",
                                                     "0.11.0".to_string(),
                                                     cx,
                                                 ))
-                                                .child(compact_detail_row(
+                                                .child(dependency_row(
                                                     "Sparkle",
                                                     "2.9.3".to_string(),
                                                     cx,
                                                 ))
-                                                .child(compact_detail_row(
+                                                .child(dependency_row(
                                                     "FFmpeg",
                                                     self.ffmpeg_version.clone().unwrap_or_else(|| {
                                                         t(lang, "Not detected", "未检测到")
@@ -1580,12 +1571,9 @@ impl Builder {
             .items_center()
             .justify_center()
             .child(
-                v_flex()
+                div()
                     .w(px(340.))
-                    .h(px(230.))
-                    .p_5()
-                    .items_center()
-                    .justify_center()
+                    .h(px(240.))
                     .relative()
                     .overflow_hidden()
                     .rounded_lg()
@@ -2504,6 +2492,59 @@ fn compact_detail_row(label: &str, value: String, cx: &App) -> impl IntoElement 
                 .text_size(px(12.))
                 .line_height(px(17.))
                 .text_color(cx.theme().popover_foreground)
+                .child(value),
+        )
+}
+
+fn language_option(
+    id: &'static str,
+    label: &'static str,
+    value: Language,
+    selected: Language,
+    cx: &mut Context<SettingsWindow>,
+) -> impl IntoElement {
+    let active = value == selected;
+    div()
+        .id(id)
+        .px(px(10.))
+        .py(px(4.))
+        .rounded_sm()
+        .cursor_pointer()
+        .text_size(px(12.))
+        .text_color(if active {
+            cx.theme().foreground
+        } else {
+            cx.theme().muted_foreground
+        })
+        .when(active, |this| this.bg(cx.theme().background))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select_language(value, cx);
+        }))
+        .child(label.to_string())
+}
+
+fn dependency_row(label: &str, value: String, cx: &App) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .gap_2()
+        .py(px(1.))
+        .items_center()
+        .child(
+            div()
+                .w(px(88.))
+                .min_w(px(88.))
+                .text_size(px(12.))
+                .text_color(cx.theme().muted_foreground)
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(cx.theme().foreground)
                 .child(value),
         )
 }
