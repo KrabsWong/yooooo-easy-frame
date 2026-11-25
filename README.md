@@ -24,3 +24,18 @@ Easy Frame is a native macOS app for turning PNG sequences into animated APNG im
 - Follow the system light and dark appearance automatically.
 - Switch the interface between Chinese and English in Settings; Chinese is the default.
 - Check for signed Sparkle updates and install them through macOS release assets.
+
+## Installation
+
+Download the macOS asset from the latest GitHub release, open it, and move `Easy Frame.app` to your `Applications` folder.
+
+Release builds are signed ad hoc because the project does not have an Apple Developer ID and is not notarized. macOS may block the first launch with a warning that the developer cannot be verified.
+
+To open the app for the first time:
+
+1. Find `Easy Frame.app` in `Applications`, hold `Control` and click it, then choose **Open**.
+2. Click **Open** again in the warning dialog.
+
+If macOS still blocks the app, open **System Settings > Privacy & Security**, find the Easy Frame warning in the **Security** section, and click **Open Anyway** or **Allow Anyway**. Confirm with your password or Touch ID when prompted, then launch the app again.
+
+After the first launch, the app opens normally.
