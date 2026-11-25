@@ -1,3 +1,4 @@
+use crate::apng;
 use std::{
     env, fs,
     ffi::OsStr,
@@ -106,6 +107,8 @@ pub fn export_apng(
         let status = wait_with_timeout(child, EXPORT_TIMEOUT)?;
 
         if status.status.success() {
+            apng::normalize_actl_position(&temp_output)
+                .map_err(|error| format!("整理 APNG 数据失败: {error}"))?;
             fs::rename(&temp_output, output)
                 .map_err(|error| format!("保存导出文件失败: {error}"))?;
             Ok(())

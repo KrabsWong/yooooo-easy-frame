@@ -1,3 +1,4 @@
+mod apng;
 mod app;
 mod export;
 mod frame;

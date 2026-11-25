@@ -117,6 +117,7 @@ impl Render for PreviewWindow {
             .gap_3()
             .p_4()
             .bg(cx.theme().popover.opacity(0.9))
+            .text_color(cx.theme().popover_foreground)
             .border_1()
             .border_color(cx.theme().border)
             .rounded_md()
@@ -2348,7 +2349,7 @@ fn compact_detail_row(label: &str, value: String, cx: &App) -> impl IntoElement 
                 .w(px(88.))
                 .min_w(px(88.))
                 .text_size(px(12.))
-                .text_color(cx.theme().muted_foreground)
+                .text_color(cx.theme().popover_foreground.opacity(0.72))
                 .child(label.to_string()),
         )
         .child(
@@ -2358,6 +2359,7 @@ fn compact_detail_row(label: &str, value: String, cx: &App) -> impl IntoElement 
                 .truncate()
                 .text_size(px(12.))
                 .line_height(px(17.))
+                .text_color(cx.theme().popover_foreground)
                 .child(value),
         )
 }
