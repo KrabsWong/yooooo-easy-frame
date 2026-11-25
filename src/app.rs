@@ -11,11 +11,13 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
         button::{Button, ButtonVariants as _},
-        checkbox::Checkbox,
         input::{Input, InputEvent, InputState},
         notification::Notification,
+        scroll::ScrollableElement as _,
         select::{SearchableVec, Select, SelectEvent, SelectState},
         spinner::Spinner,
+        switch::Switch,
+        tab::{Tab, TabBar},
         theme::Theme,
     },
     base::IndexPath,
@@ -33,6 +35,7 @@ use std::{
 actions!(apng_builder, [SelectPreviousFrame, SelectNextFrame]);
 
 const APP_BACKGROUND: &[u8] = include_bytes!("../resources/easy-frame-logo.png");
+const APP_LOGO: &[u8] = include_bytes!("../resources/easy-frame-logo.svg");
 const EMPTY_STATE_BORDER: &[u8] = include_bytes!("../resources/empty-state-border.svg");
 
 enum BootState {
@@ -51,6 +54,12 @@ enum DropPosition {
 enum MoveDirection {
     Up,
     Down,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    About,
 }
 
 impl DropPosition {
@@ -108,6 +117,7 @@ pub struct PreviewWindow {
 pub struct SettingsWindow {
     automatic: bool,
     language: Language,
+    tab: SettingsTab,
     ffmpeg_version: Option<String>,
     language_select: Entity<SelectState<SearchableVec<String>>>,
     _language_subscription: Subscription,
@@ -169,6 +179,7 @@ impl SettingsWindow {
         Self {
             automatic: settings.automatic_updates,
             language,
+            tab: SettingsTab::General,
             ffmpeg_version,
             language_select,
             _language_subscription: language_subscription,
@@ -184,118 +195,184 @@ impl Render for SettingsWindow {
         let automatic = self.automatic;
         let update_available = updater::version();
         let app_version = env!("CARGO_PKG_VERSION").to_string();
+        let selected_tab = match self.tab {
+            SettingsTab::General => 0,
+            SettingsTab::About => 1,
+        };
 
         div()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .p_4()
+            .px_4()
+            .pb_4()
             .child(
                 v_flex()
-                    .w_full()
-                    .gap_5()
+                    .size_full()
+                    .gap_4()
                     .child(
-                        v_flex()
-                            .w_full()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .w_full()
-                                    .text_size(px(15.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t(lang, "General", "常规")),
-                            )
-                            .child(
-                                h_flex()
-                                    .w_full()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap_4()
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_medium()
-                                            .child(t(lang, "Language", "界面语言")),
-                                    )
-                                    .child(
-                                        Select::new(&self.language_select)
-                                            .w(px(150.))
-                                            .accessibility_label(t(
-                                                lang,
-                                                "Interface language",
-                                                "界面语言",
-                                            )),
-                                    ),
-                            )
+                        TabBar::new("settings-tabs")
+                            .underline()
+                            .selected_index(selected_tab)
+                            .child(Tab::new().label(t(lang, "General", "常规")))
+                            .child(Tab::new().label(t(lang, "About", "关于")))
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.tab = if *index == 0 {
+                                    SettingsTab::General
+                                } else {
+                                    SettingsTab::About
+                                };
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scrollbar()
                             .child(
                                 v_flex()
                                     .w_full()
-                                    .child(
-                                        Checkbox::new("automatic-updates")
-                                            .label(t(
-                                                lang,
-                                                "Automatically check for updates",
-                                                "自动检查更新",
-                                            ))
-                                            .checked(automatic)
-                                            .child(
+                                    .gap_6()
+                                    .when(self.tab == SettingsTab::General, |this| {
+                                        this.child(
+                                            h_flex()
+                                                .w_full()
+                                                .items_center()
+                                                .justify_between()
+                                                .gap_4()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .font_medium()
+                                                        .child(t(lang, "Language", "界面语言")),
+                                                )
+                                                .child(
+                                                    Select::new(&self.language_select)
+                                                        .w(px(150.))
+                                                        .accessibility_label(t(
+                                                            lang,
+                                                            "Interface language",
+                                                            "界面语言",
+                                                        )),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .items_start()
+                                                .justify_between()
+                                                .gap_4()
+                                                .child(
+                                                    v_flex().gap_1().child(
+                                                        div()
+                                                            .text_size(px(13.))
+                                                            .font_medium()
+                                                            .child(t(
+                                                                lang,
+                                                                "Automatic updates",
+                                                                "自动更新",
+                                                            )),
+                                                    ).child(
+                                                        div()
+                                                            .text_size(px(12.))
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(t(
+                                                                lang,
+                                                                "Checks every 12 hours.",
+                                                                "每 12 小时检查一次。",
+                                                            )),
+                                                    ),
+                                                )
+                                                .child(
+                                                    Switch::new("automatic-updates")
+                                                        .checked(automatic)
+                                                        .accessibility_label(t(
+                                                            lang,
+                                                            "Automatic updates",
+                                                            "自动更新",
+                                                        ))
+                                                        .on_click(cx.listener(
+                                                            |this, enabled: &bool, _, cx| {
+                                                                updater::set_automatic(*enabled);
+                                                                let mut settings = Settings::load();
+                                                                settings.automatic_updates = *enabled;
+                                                                settings.save();
+                                                                this.automatic = *enabled;
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .when_some(update_available, |this, version| {
+                                            this.child(
                                                 div()
                                                     .text_size(px(12.))
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(t(
-                                                        lang,
-                                                        "Checks every 12 hours.",
-                                                        "每 12 小时检查一次。",
+                                                    .text_color(warm_accent())
+                                                    .child(format!(
+                                                        "{}: {}",
+                                                        t(lang, "Update available", "有可用更新"),
+                                                        version
                                                     )),
                                             )
-                                            .on_click(cx.listener(
-                                                |this, enabled: &bool, _, cx| {
-                                                    updater::set_automatic(*enabled);
-                                                    let mut settings = Settings::load();
-                                                    settings.automatic_updates = *enabled;
-                                                    settings.save();
-                                                    this.automatic = *enabled;
-                                                    cx.notify();
-                                                },
-                                            )),
-                                    )
-                                    .when_some(update_available, |this, version| {
+                                        })
+                                    })
+                                    .when(self.tab == SettingsTab::About, |this| {
                                         this.child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .text_color(warm_accent())
-                                                .child(format!(
-                                                    "{}: {}",
-                                                    t(lang, "Update available", "有可用更新"),
-                                                    version
+                                            v_flex()
+                                                .w_full()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    svg()
+                                                        .data(APP_LOGO)
+                                                        .w(px(88.))
+                                                        .h(px(88.)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .font_medium()
+                                                        .child(format!("Easy Frame {app_version}")),
+                                                ),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .mt_3()
+                                                .child(
+                                                    div()
+                                                        .text_size(px(13.))
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(t(
+                                                            lang,
+                                                            "Dependencies",
+                                                            "依赖资源",
+                                                        )),
+                                                )
+                                                .child(compact_detail_row(
+                                                    "GPUI / gpui-kit",
+                                                    "0.11.0".to_string(),
+                                                    cx,
+                                                ))
+                                                .child(compact_detail_row(
+                                                    "Sparkle",
+                                                    "2.9.3".to_string(),
+                                                    cx,
+                                                ))
+                                                .child(compact_detail_row(
+                                                    "FFmpeg",
+                                                    self.ffmpeg_version.clone().unwrap_or_else(|| {
+                                                        t(lang, "Not detected", "未检测到")
+                                                            .to_string()
+                                                    }),
+                                                    cx,
                                                 )),
                                         )
                                     }),
-                            )
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(px(15.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t(lang, "About", "关于")),
-                                    )
-                            .child(compact_detail_row(
-                                t(lang, "Version", "版本"),
-                                app_version,
-                                cx,
-                            ))
-                            .child(compact_detail_row(
-                                t(lang, "Bundled FFmpeg", "内置 FFmpeg"),
-                                self.ffmpeg_version.clone().unwrap_or_else(|| {
-                                    t(lang, "Not detected", "未检测到").to_string()
-                                }),
-                                cx,
-                            )),
-                    )
+                            ),
+                    ),
             )
     }
 }

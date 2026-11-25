@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F5F5F7"/>
+    </linearGradient>
+
+    <filter id="iconShadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#1E293B" flood-opacity="0.16"/>
+    </filter>
+
+    <filter id="playShadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="8" flood-color="#B45309" flood-opacity="0.32"/>
+    </filter>
+
+    <linearGradient id="topLayerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFD426" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0.98"/>
+    </linearGradient>
+
+    <pattern id="isoChecker" width="60" height="34.64" patternUnits="userSpaceOnUse">
+      <polygon points="30,0 60,17.32 30,34.64 0,17.32" fill="#FFFFFF"/>
+      <polygon points="30,0 45,8.66 30,17.32 15,8.66" fill="#9AA5B4"/>
+      <polygon points="30,17.32 45,25.98 30,34.64 15,25.98" fill="#9AA5B4"/>
+    </pattern>
+
+    <g id="isoPlate">
+      <path d="M 0,-155 L 250,-11 Q 272,0 250,11 L 0,155 Q -16,164 -32,155 L -250,29 Q -272,18 -272,0 Q -272,-18 -250,-29 L -32,-155 Q -16,-164 0,-155 Z"
+            transform="translate(16, 0)"/>
+    </g>
+  </defs>
+
+  <g filter="url(#iconShadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#bgGrad)" stroke="#E5E7EB" stroke-width="3"/>
+  </g>
+
+  <g transform="translate(512, 520)">
+    <g transform="translate(0, 145)">
+      <use href="#isoPlate" transform="translate(0, 16)" fill="#94A3B8"/>
+      <use href="#isoPlate" fill="url(#isoChecker)" stroke="#CBD5E1" stroke-width="2"/>
+    </g>
+
+    <g transform="translate(0, 55)">
+      <use href="#isoPlate" transform="translate(0, 12)" fill="#D97706" fill-opacity="0.58"/>
+      <use href="#isoPlate" fill="#FBBF24" fill-opacity="0.55" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="2"/>
+    </g>
+
+    <g transform="translate(0, -35)">
+      <use href="#isoPlate" transform="translate(0, 12)" fill="#EAB308" fill-opacity="0.68"/>
+      <use href="#isoPlate" fill="#FDE047" fill-opacity="0.65" stroke="#FFFFFF" stroke-opacity="0.6" stroke-width="2"/>
+    </g>
+
+    <g transform="translate(0, -125)">
+      <use href="#isoPlate" transform="translate(0, 12)" fill="#D97706"/>
+      <use href="#isoPlate" fill="url(#topLayerGrad)" stroke="#FEF08A" stroke-opacity="0.9" stroke-width="3"/>
+
+      <line x1="-185" y1="22" x2="-75" y2="85" stroke="#FEF9C3" stroke-width="14" stroke-linecap="round" opacity="0.95"/>
+      <line x1="-50" y1="100" x2="-32" y2="110" stroke="#FEF9C3" stroke-width="14" stroke-linecap="round" opacity="0.95"/>
+
+      <g filter="url(#playShadow)" transform="translate(8, -6)">
+        <path d="M -52,-42 Q -52,-56 -38,-50 L 64,-12 Q 78,-6 66,4 L -26,56 Q -40,64 -44,48 Z"
+              fill="#FFFFFF" stroke="#FFFFFF" stroke-width="6" stroke-linejoin="round"/>
+      </g>
+    </g>
+  </g>
+</svg>
