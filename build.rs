@@ -47,13 +47,17 @@ fn compile_native(
         arch,
         "-mmacosx-version-min=14.0",
         "-c",
-        source,
-        "-o",
     ]);
     if let Some(framework) = framework {
         clang.arg("-F").arg(framework);
     }
-    assert!(clang.arg(&object).status().unwrap().success());
+    assert!(clang
+        .arg(source)
+        .arg("-o")
+        .arg(&object)
+        .status()
+        .unwrap()
+        .success());
     assert!(Command::new("ar")
         .arg("rcs")
         .arg(out.join(format!("lib{library}.a")))
