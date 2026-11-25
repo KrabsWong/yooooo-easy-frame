@@ -2,6 +2,14 @@
 
 Easy Frame is a native macOS app for turning PNG sequences into animated APNG images.
 
+
+| Light | Dark | 
+|:-------|:------|
+| <img width="300" alt="image" src="https://github.com/user-attachments/assets/672fb03b-b9c7-4070-afc4-df915e5f2aeb" /> | <img width="300" alt="image" src="https://github.com/user-attachments/assets/2d8dfc09-cabd-4b06-bd2e-cf9fbd0a9ae9" /> |
+| <img width="300" alt="image" src="https://github.com/user-attachments/assets/dbea843a-01c4-4e70-8cb2-596e69c090c6" /> | <img width="300" alt="image" src="https://github.com/user-attachments/assets/6415a406-be13-4e44-9783-664ed84832f0" /> |
+| <img width="300" alt="image" src="https://github.com/user-attachments/assets/8a641ef9-015f-4084-ad39-96ef75c427f3" /> | <img width="300" alt="image" src="https://github.com/user-attachments/assets/acdaa53f-e6ef-446f-97d9-e23877ae9f1d" /> |
+
+
 ## Features
 
 - Add PNG frames by dragging them into the window or using the file picker.
