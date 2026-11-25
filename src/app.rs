@@ -1128,6 +1128,17 @@ impl Builder {
                                                     .font_medium()
                                                     .child(t(lang, "Updates", "更新")),
                                             )
+                                            .when(!updater_ready, |this| {
+                                                this.child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .child(t(
+                                                            lang,
+                                                            "Updates are available in release builds.",
+                                                            "更新功能仅在正式构建中可用。",
+                                                        )),
+                                                )
+                                            })
                                             .when_some(update_available.clone(), |this, version| {
                                                 this.child(
                                                     div()

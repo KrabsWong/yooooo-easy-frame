@@ -102,6 +102,7 @@ fn main() {
             ]);
 
             cx.spawn(async move |cx| {
+                let mut previous_update = updater::version();
                 loop {
                     cx.background_spawn(async {
                         std::thread::sleep(Duration::from_millis(300));
@@ -110,6 +111,11 @@ fn main() {
                     let _ = cx.update(|cx| {
                         if cx.active_window().is_none() {
                             let _ = builder.update(cx, |builder, cx| builder.close_preview(cx));
+                        }
+                        let current_update = updater::version();
+                        if current_update != previous_update {
+                            previous_update = current_update;
+                            let _ = main_window.update(cx, |_, window, _| window.refresh());
                         }
                     });
                 }

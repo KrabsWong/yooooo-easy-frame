@@ -1,0 +1,36 @@
+name: Build macOS app
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      # CI only checks that the signed-update bundle builds. Release signing
+      # uses the real public key configured in the repository variable.
+      SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY || 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Prepare toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+      - name: Test
+        run: |
+          cargo test --locked
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Build app with Sparkle
+        run: bash scripts/package.sh
+      - name: Verify updater preferences
+        run: python3 scripts/test-updater.py --sdk build/sparkle/sdk
